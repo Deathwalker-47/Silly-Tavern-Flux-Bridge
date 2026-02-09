@@ -48,7 +48,24 @@
             : `${trimmed}/sdapi/v1/txt2img`;
     }
 
-    const BRIDGE_TXT2IMG_URL = normalizeBridgeUrl(CONFIG.BRIDGE_URL);
+    /**
+     * Resolve bridge URL at call time:
+     *  1. SillyTavern's built-in Image Generation SD Web UI URL (auto_url)
+     *  2. Plugin config (localStorage / window override / default)
+     */
+    function resolveBridgeUrl() {
+        try {
+            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+                const ctx = SillyTavern.getContext();
+                const stUrl = ctx?.extensionSettings?.sd?.auto_url;
+                if (stUrl && typeof stUrl === 'string' && stUrl.trim().length > 0) {
+                    return normalizeBridgeUrl(stUrl);
+                }
+            }
+        } catch (_) {}
+
+        return normalizeBridgeUrl(CONFIG.BRIDGE_URL);
+    }
 
     let lastProcessedMessage = '';
     let messageCompleteTimer = null;
@@ -432,15 +449,16 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
     // ============================================
 
     async function generateImage(prompt) {
+        const bridgeUrl = resolveBridgeUrl();
         console.log('[AutoImageGen] 🎨 Sending to bridge...');
         console.log(`[AutoImageGen] 📝 Prompt: ${prompt.substring(0, 100)}...`);
-        console.log(`[AutoImageGen] 🌉 URL: ${BRIDGE_TXT2IMG_URL}`);
+        console.log(`[AutoImageGen] 🌉 URL: ${bridgeUrl}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         try {
-            const response = await fetch(BRIDGE_TXT2IMG_URL, {
+            const response = await fetch(bridgeUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 signal: controller.signal,
@@ -469,7 +487,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
             } else if (e instanceof TypeError) {
                 console.error(
                     '[AutoImageGen] ❌ Failed to reach bridge. Make sure Flux LoRA Bridge is running and reachable at:',
-                    BRIDGE_TXT2IMG_URL
+                    bridgeUrl
                 );
             } else {
                 console.error('[AutoImageGen] ❌ Image generation failed:', e);
@@ -555,7 +573,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         startFallbackCheck();
         console.log('[AutoImageGen] ✅ Ready - watching for messages');
         console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
-        console.log(`[AutoImageGen] 🌉 Bridge: ${BRIDGE_TXT2IMG_URL}`);
+        console.log(`[AutoImageGen] 🌉 Bridge: ${resolveBridgeUrl()}`);
         console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
     }
 

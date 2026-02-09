@@ -1,6 +1,6 @@
 {
     "enabled": true,
-    "apiUrl": "http://localhost:7861/sdapi/v1/txt2img",
+    "apiUrl": "",
     "autoGenerate": true,
     "messageCompleteDelay": 4000,
     "steps": 40,
