@@ -1,0 +1,14 @@
+{
+    "enabled": true,
+    "apiUrl": "http://localhost:7861/sdapi/v1/txt2img",
+    "autoGenerate": true,
+    "messageCompleteDelay": 4000,
+    "steps": 40,
+    "cfg_scale": 3.5,
+    "width": 1024,
+    "height": 1024,
+    "minMessageLength": 20,
+    "useCharacterPrompt": true,
+    "useLLM": true,
+    "llmModel": "deepseek/deepseek-chat"
+}

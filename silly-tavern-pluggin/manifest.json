@@ -1,0 +1,13 @@
+{
+    "display_name": "Auto Image Generator (Universal)",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Custom",
+    "version": "2.0.0",
+    "description": "Auto-generates images from AI messages using mutation observer for complete message detection. Works from empty chat.",
+    "homePage": "",
+    "auto_update": false
+}
