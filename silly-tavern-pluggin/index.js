@@ -35,102 +35,20 @@
 
     const CONFIG = loadConfig();
 
-    function collectCandidateBridgeUrls() {
-        const context = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext)
-            ? SillyTavern.getContext()
-            : null;
-
-        const candidates = [
-            context?.extensionSettings?.sd?.url,
-            context?.extensionSettings?.sd?.webui_url,
-            context?.extensionSettings?.sd?.api_url,
-            context?.extensionSettings?.sd?.sd_url,
-            context?.extension_settings?.sd?.url,
-            context?.extension_settings?.sd?.webui_url,
-            window?.extension_settings?.sd?.url,
-            window?.extension_settings?.sd?.webui_url,
-            window?.extension_settings?.sd?.api_url,
-            window?.extension_settings?.sd?.sd_url,
-            window?.SillyTavern?.getContext?.()?.extensionSettings?.sd?.url,
-            window?.SillyTavern?.getContext?.()?.extensionSettings?.sd?.webui_url,
-            document.querySelector('#sd_webui_url')?.value,
-            document.querySelector('input[name="sd_webui_url"]')?.value,
-            document.querySelector('#extensions_settings2 #sd_webui_url')?.value
-        ];
-
-        const likelyUrlInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
-        for (const input of likelyUrlInputs) {
-            const hint = `${input.id || ''} ${input.name || ''} ${input.placeholder || ''} ${input.className || ''}`.toLowerCase();
-            if ((hint.includes('sd') || hint.includes('webui') || hint.includes('bridge') || hint.includes('url')) && input.value) {
-                candidates.push(input.value);
-            }
-        }
-
-        return candidates;
-    }
-
     function normalizeBridgeUrl(rawUrl) {
         if (!rawUrl || typeof rawUrl !== 'string') {
-            return null;
+            return DEFAULT_CONFIG.BRIDGE_URL;
         }
 
-        const trimmed = rawUrl.trim().replace(/\/+$/, '');
-        if (!trimmed || !/^https?:\/\//i.test(trimmed)) return null;
+        const trimmed = rawUrl.trim().replace(/\/$/, '');
+        if (!trimmed) return DEFAULT_CONFIG.BRIDGE_URL;
 
-        if (trimmed.endsWith('/sdapi/v1/txt2img')) {
-            return trimmed;
-        }
-
-        return `${trimmed}/sdapi/v1/txt2img`;
+        return trimmed.endsWith('/sdapi/v1/txt2img')
+            ? trimmed
+            : `${trimmed}/sdapi/v1/txt2img`;
     }
 
-    function isLocalhostUrl(url) {
-        try {
-            const parsed = new URL(url);
-            return ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function deriveHostedBridgeUrl() {
-        const host = window.location.hostname;
-        if (!host || ['localhost', '127.0.0.1', '::1'].includes(host)) return null;
-
-        if (host.endsWith('midnighttavern.online')) {
-            return `${window.location.protocol}//bridge.midnighttavern.online/sdapi/v1/txt2img`;
-        }
-
-        return null;
-    }
-
-    function resolveBridgeTxt2ImgUrl() {
-        const rawCandidates = [
-            ...collectCandidateBridgeUrls(),
-            CONFIG.BRIDGE_URL,
-            DEFAULT_CONFIG.BRIDGE_URL
-        ];
-
-        const normalizedCandidates = rawCandidates
-            .map(normalizeBridgeUrl)
-            .filter(Boolean);
-
-        const isHostedPage = !['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
-
-        if (isHostedPage) {
-            const remoteCandidate = normalizedCandidates.find((url) => !isLocalhostUrl(url));
-            if (remoteCandidate) {
-                return remoteCandidate;
-            }
-
-            const derivedHostedBridge = deriveHostedBridgeUrl();
-            if (derivedHostedBridge) {
-                return derivedHostedBridge;
-            }
-        }
-
-        return normalizedCandidates[0] || DEFAULT_CONFIG.BRIDGE_URL;
-    }
+    const BRIDGE_TXT2IMG_URL = normalizeBridgeUrl(CONFIG.BRIDGE_URL);
 
     let lastProcessedMessage = '';
     let messageCompleteTimer = null;
@@ -516,14 +434,13 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
     async function generateImage(prompt) {
         console.log('[AutoImageGen] 🎨 Sending to bridge...');
         console.log(`[AutoImageGen] 📝 Prompt: ${prompt.substring(0, 100)}...`);
-        const bridgeTxt2ImgUrl = resolveBridgeTxt2ImgUrl();
-        console.log(`[AutoImageGen] 🌉 URL: ${bridgeTxt2ImgUrl}`);
+        console.log(`[AutoImageGen] 🌉 URL: ${BRIDGE_TXT2IMG_URL}`);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         try {
-            const response = await fetch(bridgeTxt2ImgUrl, {
+            const response = await fetch(BRIDGE_TXT2IMG_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 signal: controller.signal,
@@ -552,7 +469,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
             } else if (e instanceof TypeError) {
                 console.error(
                     '[AutoImageGen] ❌ Failed to reach bridge. Make sure Flux LoRA Bridge is running and reachable at:',
-                    bridgeTxt2ImgUrl
+                    BRIDGE_TXT2IMG_URL
                 );
             } else {
                 console.error('[AutoImageGen] ❌ Image generation failed:', e);
@@ -638,7 +555,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         startFallbackCheck();
         console.log('[AutoImageGen] ✅ Ready - watching for messages');
         console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
-        console.log(`[AutoImageGen] 🌉 Bridge: ${resolveBridgeTxt2ImgUrl()}`);
+        console.log(`[AutoImageGen] 🌉 Bridge: ${BRIDGE_TXT2IMG_URL}`);
         console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
     }
 
