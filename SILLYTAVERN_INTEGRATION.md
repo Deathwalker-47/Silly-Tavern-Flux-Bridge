@@ -162,7 +162,7 @@ If successful, response includes a base64 image under `images[0]`.
 - Confirm ST uses `http://localhost:7861`
 - Ensure bridge is running and port is open
 
----
+Example:
 
 ## File Map
 
