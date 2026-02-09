@@ -959,20 +959,58 @@ class WavespeedClient(ProviderClient):
             logger.info(f"🌊 [Wavespeed] Sending request...")
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(Config.WAVESPEED_ENDPOINT, json=payload, headers=headers)
-            
+
             logger.info(f"🌊 [Wavespeed] Response status: {response.status_code}")
-            
+
             if response.status_code != 200:
                 logger.error(f"❌ [Wavespeed] API Error: {response.status_code} {response.text}")
                 raise Exception(f"Wavespeed API error: {response.status_code}")
-            
+
             result = response.json()
             logger.info(f"🌊 [Wavespeed] Response keys: {list(result.keys())}")
-            
+
+            # Check for immediate outputs
+            data = result.get("data", result)
+            if isinstance(data, dict):
+                outputs = data.get("outputs", [])
+                if outputs:
+                    image_bytes = await _resolve_image_bytes_from_payload(result, "Wavespeed")
+                    logger.info(f"✅ [Wavespeed] Image resolved immediately ({len(image_bytes)} bytes)")
+                    return image_bytes
+
+                # Async job - poll the result URL
+                result_url = (data.get("urls") or {}).get("get")
+                if result_url:
+                    logger.info(f"🌊 [Wavespeed] Job queued, polling {result_url}...")
+                    for attempt in range(60):
+                        await asyncio.sleep(2)
+                        async with httpx.AsyncClient(timeout=30.0) as client:
+                            poll_resp = await client.get(result_url, headers=headers)
+                        if poll_resp.status_code != 200:
+                            continue
+                        poll_data = poll_resp.json()
+                        inner = poll_data.get("data", poll_data)
+                        status = inner.get("status", "")
+                        if status in ("processing", "created", "pending", "in_queue"):
+                            if attempt % 5 == 0:
+                                logger.info(f"🌊 [Wavespeed] Still {status} (poll {attempt+1}/60)")
+                            continue
+                        if status == "failed":
+                            raise Exception(f"Wavespeed job failed: {inner.get('error', 'unknown')}")
+                        poll_outputs = inner.get("outputs", [])
+                        if poll_outputs:
+                            image_bytes = await _resolve_image_bytes_from_payload(inner, "Wavespeed")
+                            logger.info(f"✅ [Wavespeed] Image resolved after polling ({len(image_bytes)} bytes)")
+                            return image_bytes
+                        if status == "completed":
+                            raise Exception("Wavespeed job completed but returned no outputs")
+                    raise Exception("Wavespeed polling timed out after 120s")
+
+            # Fallback: try generic extraction
             image_bytes = await _resolve_image_bytes_from_payload(result, "Wavespeed")
             logger.info(f"✅ [Wavespeed] Image resolved ({len(image_bytes)} bytes)")
             return image_bytes
-                
+
         except Exception as e:
             logger.error(f"❌ [Wavespeed] FAILED: {e}")
             raise
@@ -1037,24 +1075,65 @@ class FALClient(ProviderClient):
         }
         
         try:
-            logger.info(f"🎨 [FAL] Sending synchronous request...")
-            
+            logger.info(f"🎨 [FAL] Sending request...")
+
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(self.endpoint, json=payload, headers=headers)
-            
+
             logger.info(f"🎨 [FAL] Response status: {response.status_code}")
-            
+
             if response.status_code != 200:
                 logger.error(f"❌ [FAL] API Error: {response.status_code} {response.text}")
                 raise Exception(f"FAL API error: {response.status_code}")
-            
+
             result = response.json()
             logger.info(f"🎨 [FAL] Response keys: {list(result.keys())}")
-            
-            image_bytes = await _resolve_image_bytes_from_payload(result, "FAL")
-            logger.info(f"✅ [FAL] Image resolved ({len(image_bytes)} bytes)")
-            return image_bytes
-                
+
+            # Check for direct result (images in response)
+            if "images" in result:
+                image_bytes = await _resolve_image_bytes_from_payload(result, "FAL")
+                logger.info(f"✅ [FAL] Image resolved immediately ({len(image_bytes)} bytes)")
+                return image_bytes
+
+            # Queued response - poll response_url
+            response_url = result.get("response_url")
+            status_url = result.get("status_url")
+            if not response_url:
+                raise Exception(f"FAL returned no images and no response_url: {list(result.keys())}")
+
+            logger.info(f"🎨 [FAL] Job queued, polling for result...")
+            for attempt in range(60):
+                await asyncio.sleep(2)
+
+                # Check status if available
+                if status_url:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        status_resp = await client.get(status_url, headers=headers)
+                    if status_resp.status_code == 200:
+                        status_data = status_resp.json()
+                        status = status_data.get("status", "")
+                        if status in ("IN_QUEUE", "IN_PROGRESS"):
+                            if attempt % 5 == 0:
+                                logger.info(f"🎨 [FAL] Still {status} (poll {attempt+1}/60)")
+                            continue
+
+                # Try fetching the completed result
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    poll_resp = await client.get(response_url, headers=headers)
+
+                if poll_resp.status_code == 200:
+                    poll_data = poll_resp.json()
+                    if "images" in poll_data or ("data" in poll_data and "images" in poll_data.get("data", {})):
+                        image_bytes = await _resolve_image_bytes_from_payload(poll_data, "FAL")
+                        logger.info(f"✅ [FAL] Image resolved after polling ({len(image_bytes)} bytes)")
+                        return image_bytes
+                elif poll_resp.status_code == 202:
+                    if attempt % 5 == 0:
+                        logger.info(f"🎨 [FAL] Still processing (poll {attempt+1}/60)")
+                    continue
+
+            raise Exception("FAL polling timed out after 120s")
+
         except Exception as e:
             logger.error(f"❌ [FAL] FAILED: {e}")
             raise
@@ -1094,6 +1173,7 @@ class TogetherAIClient(ProviderClient):
         if len(limited_loras) < len(loras):
             logger.warning(f"⚠️ [Together AI] Limiting LoRAs from {len(loras)} to {len(limited_loras)}")
         
+        # Together SDK v2: image_loras takes a list of {"path": ..., "scale": ...} dicts
         lora_list = []
         for lora in limited_loras:
             lora_list.append({
@@ -1101,23 +1181,25 @@ class TogetherAIClient(ProviderClient):
                 "scale": lora.get("weight", 1.0)
             })
             logger.info(f"🤝 [Together AI] LoRA: {lora.get('id')} - path: {lora.get('url')} - scale: {lora.get('weight')}")
-        
+
         full_prompt = f"{prompt}. {negative_prompt}" if negative_prompt else prompt
-        
+
         try:
             logger.info(f"🤝 [Together AI] Calling SDK in thread pool...")
-            
+
             def _generate():
-                return self.client.images.generate(
-                    prompt=full_prompt,
-                    model="black-forest-labs/FLUX.1-dev-lora",
-                    width=params.get('width', 1024),
-                    height=params.get('height', 1024),
-                    steps=params.get('steps', 20),
-                    n=1,
-                    disable_safety_checker=True,
-                    loras=json.dumps(lora_list)
-                )
+                kwargs = {
+                    "prompt": full_prompt,
+                    "model": "black-forest-labs/FLUX.1-dev-lora",
+                    "width": params.get('width', 1024),
+                    "height": params.get('height', 1024),
+                    "steps": params.get('steps', 20),
+                    "n": 1,
+                    "disable_safety_checker": True,
+                }
+                if lora_list:
+                    kwargs["image_loras"] = lora_list
+                return self.client.images.generate(**kwargs)
             
             response = await asyncio.to_thread(_generate)
             logger.info(f"🤝 [Together AI] SDK response received")
@@ -1161,34 +1243,35 @@ class TogetherAIClient(ProviderClient):
 
 class HFZeroGPUClient(ProviderClient):
     """HuggingFace Gradio-backed ZeroGPU client"""
-    
+
     def __init__(self, space: Optional[str] = None, token: Optional[str] = None):
         self.client = None
         if not GRADIO_AVAILABLE or not space:
             logger.info("⚠️ [HF ZeroGPU] Gradio not available or HF space not provided, skipping init")
             return
-        
+
         try:
-            self.client = GradioClient(space, hf_token=token)
+            self.client = GradioClient(space, token=token)
             logger.info(f"✅ [HF ZeroGPU] Connected to HF Space: {space}")
         except Exception as e:
             logger.error(f"❌ [HF ZeroGPU] Failed to connect to HF Space {space}: {e}")
             self.client = None
-        
+
         self.space = space
         self.token = token
-    
+
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
         if not self.client:
             logger.error("❌ [HF ZeroGPU] Gradio client not initialized")
             raise ValueError("Gradio client not available")
-        
+
         logger.info(f"🤗 [HF ZeroGPU] GENERATION REQUEST")
         logger.info(f"🤗 [HF ZeroGPU] Generating with {len(loras)} LoRAs (capped at {Config.MAXLORAS_HF})")
         logger.info(f"🤗 [HF ZeroGPU] Prompt: {len(prompt.split())} words: {prompt}")
         logger.info(f"🤗 [HF ZeroGPU] Negative prompt: {negative_prompt}")
         logger.info(f"🤗 [HF ZeroGPU] Parameters: steps={params.get('steps')}, cfg={params.get('cfg_scale')}, size={params.get('width')}x{params.get('height')}")
-        
+
+        # Build LoRA JSON list for the HF Space API (lora_strings_json param)
         loras_payload = []
         for lora in loras:
             loras_payload.append({
@@ -1197,29 +1280,64 @@ class HFZeroGPUClient(ProviderClient):
                 "weight": lora.get("weight")
             })
             logger.info(f"🤗 [HF ZeroGPU] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Weight: {lora.get('weight')}")
-        
+
+        lora_json_str = json.dumps(loras_payload)
+
         try:
             logger.info(f"🤗 [HF ZeroGPU] Calling Gradio predict in thread pool...")
-            
+
+            # HF Space API: /run_lora expects these exact parameter names
             result = await asyncio.to_thread(
                 self.client.predict,
                 prompt=prompt,
-                negative_prompt=negative_prompt,
-                steps=params.get('steps', 20),
+                image_url="",
+                lora_strings_json=lora_json_str,
                 cfg_scale=params.get('cfg_scale', 3.5),
+                steps=params.get('steps', 28),
+                randomize_seed=params.get('seed', -1) == -1,
+                seed=params.get('seed', -1) if params.get('seed', -1) != -1 else 0,
                 width=params.get('width', 1024),
                 height=params.get('height', 1024),
-                seed=params.get('seed', -1),
-                loras=loras_payload,
+                upload_to_r2=False,
+                account_id="",
+                access_key="",
+                secret_key="",
+                bucket="",
                 api_name="/run_lora"
             )
-            
+
             logger.info(f"🤗 [HF ZeroGPU] Gradio response received, type: {type(result)}")
-            
+
+            # Result is a tuple: (generated_image_dict, result_json_str)
+            if isinstance(result, (tuple, list)) and len(result) >= 1:
+                image_data = result[0]
+                logger.info(f"🤗 [HF ZeroGPU] Image data type: {type(image_data)}")
+
+                # gradio_client returns a dict with path/url or a FileData object
+                if isinstance(image_data, dict):
+                    file_path = image_data.get("path") or image_data.get("url")
+                elif hasattr(image_data, "path"):
+                    file_path = image_data.path
+                else:
+                    file_path = str(image_data)
+
+                if file_path and os.path.isfile(file_path):
+                    with open(file_path, "rb") as f:
+                        image_bytes = f.read()
+                    logger.info(f"✅ [HF ZeroGPU] Image read from file ({len(image_bytes)} bytes)")
+                    return image_bytes
+                elif file_path and (file_path.startswith("http://") or file_path.startswith("https://")):
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        img_resp = await client.get(file_path)
+                        img_resp.raise_for_status()
+                    logger.info(f"✅ [HF ZeroGPU] Image downloaded from URL ({len(img_resp.content)} bytes)")
+                    return img_resp.content
+
+            # Fallback: try generic extraction
             image_bytes = await _resolve_image_bytes_from_payload(result, "HF ZeroGPU")
             logger.info(f"✅ [HF ZeroGPU] Image resolved ({len(image_bytes)} bytes)")
             return image_bytes
-                
+
         except Exception as e:
             logger.error(f"❌ [HF ZeroGPU] FAILED: {e}")
             raise
