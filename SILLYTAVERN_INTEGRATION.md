@@ -162,7 +162,7 @@ If successful, response includes a base64 image under `images[0]`.
 - Confirm ST uses `http://localhost:7861`
 - Ensure bridge is running and port is open
 
----
+Example:
 
 ## File Map
 
@@ -171,43 +171,3 @@ If successful, response includes a base64 image under `images[0]`.
 - `runware_lora_mapping.json` – dynamic URL→Runware ID cache
 - `env.example` – safe environment template
 - `QUICK_REFERENCE.md` – concise operational checklist
-
-
-
-## Install the Included Auto-Image Plugin
-
-This repo includes a plugin at `silly-tavern-pluggin/`.
-
-Copy it into your SillyTavern extension folder:
-
-```bash
-mkdir -p /path/to/SillyTavern/public/scripts/extensions/auto-image-universal
-cp -r silly-tavern-pluggin/* /path/to/SillyTavern/public/scripts/extensions/auto-image-universal/
-```
-
-After copying:
-1. Restart or hard-refresh SillyTavern.
-2. Open browser dev tools and verify plugin logs start with `[AutoImageGen]`.
-3. Ensure bridge is reachable at `http://localhost:7861/sdapi/v1/txt2img`.
-
-### Plugin behavior checks
-- Uses MutationObserver to detect complete AI messages.
-- Debounces message completion before generating images.
-- Skips generation if image already exists on the message.
-- Uses character image prompts when available.
-- Falls back to non-LLM prompt generation if OpenRouter key is not configured.
-
-### Plugin runtime config (recommended)
-The plugin reads runtime overrides from:
-- `window.AUTO_IMAGE_UNIVERSAL_CONFIG`
-- `localStorage.autoImageUniversalConfig`
-
-Example:
-
-```js
-localStorage.setItem('autoImageUniversalConfig', JSON.stringify({
-  BRIDGE_URL: 'http://localhost:7861/sdapi/v1/txt2img',
-  OPENROUTER_API_KEY: 'your_openrouter_key',
-  LLM_MODEL: 'deepseek/deepseek-chat'
-}));
-```
