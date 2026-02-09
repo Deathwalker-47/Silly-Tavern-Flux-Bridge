@@ -140,7 +140,41 @@ PIXELDOJO_API_KEY=...
 ## Current Challenges
 
 ### Multi-Character LoRA Bleed (Critical)
-The biggest unresolved problem. When a scene has multiple characters, their LoRA features bleed into each other. All prompt-level mitigations have been exhausted — this likely requires a fundamentally different approach (composite LoRAs, regional attention, or multi-pass generation). This is the main bottleneck preventing production-quality multi-character scenes.
+The biggest unresolved problem. When a scene has multiple characters, their LoRA features bleed into each
+other (hair color, clothing, face shape mixing). All prompt-level mitigations have been exhausted —
+prompt ordering, keyword isolation, weight tuning. None work reliably.
+
+**Why it happens:** Each LoRA modifies the same attention weight space. With 2+ character LoRAs active,
+the model can't separate which prompt tokens should be influenced by which LoRA. This is a fundamental
+limitation of LoRA-based diffusion models (Flux, SD, etc.), not a code problem.
+
+**Approaches investigated (all failed or insufficient):**
+- Prompt ordering / keyword isolation — minimal effect
+- Weight tuning (lower weights for secondary chars) — reduces quality of all chars
+- Provider-specific LoRA ordering — no meaningful difference
+
+**Remaining approaches worth investigating:**
+1. **Composite LoRAs** (most promising) — Train a single LoRA on datasets where multiple characters
+   co-exist in the same scene. The model learns their co-existence rather than blending separate LoRAs.
+   Requires training infrastructure + curated multi-character datasets.
+2. **Two-pass inpainting** (practical with current providers) — Generate scene with char A's LoRA only,
+   then inpaint char B's region with char B's LoRA only. FAL and Together both support Flux inpainting.
+   Doubles generation time (~10-20s total) but eliminates bleed completely. Needs: scene layout detection
+   (LLM-driven or segmentation model) to identify inpaint regions.
+3. **Regional attention masking** — Assign each LoRA's influence to a spatial region. Requires ComfyUI
+   (AttentionCouple node) → needs RunPod/RunComfy serverless deployment. Most flexible but most complex
+   infrastructure change.
+4. **IP-Adapter / reference image conditioning** — Use reference images instead of LoRAs for character
+   identity. Avoids the LoRA weight collision entirely but requires different model pipeline.
+
+**Note on Wan 2.2 for multi-char:** Wan 2.2 is a video model and will NOT solve multi-char LoRA bleed.
+Video models have more complex attention than image models — if anything, multi-LoRA bleed would be
+worse. Wan 2.2's value is for video generation as a separate feature, not as a fix for this problem.
+
+### Provider Landscape Constraints
+Extensive research (months) found only 6 providers that support both multi-LoRA AND full NSFW allowance.
+Some providers reduced their LoRA caps during development. The only remaining options for more control
+are full serverless deployments (RunPod, RunComfy) which add significant infrastructure complexity.
 
 ## Roadmap
 
@@ -150,21 +184,63 @@ The biggest unresolved problem. When a scene has multiple characters, their LoRA
 - DeepSeek V3 prompt summarization
 - SillyTavern AutoImageGen plugin integration
 
-### Phase 2: Next — Wan 2.2 Video Generation Bridge
+### Phase 1.5: Security & Operations Hardening
+- Nginx Bearer token auth (prevents unauthorized image generation on your credits)
+- Nginx rate limiting (per-IP, burst protection)
+- Block unused endpoints (only expose `/sdapi/v1/txt2img`, `/samplers`, `/sd-models`)
+- Per-token quotas + concurrency caps in bridge code
+- Provider health tracking (dynamic routing based on success rate / latency, not just ordered fallback)
+- Spend tracking + daily budget alerts
+
+### Phase 2: Multi-Character LoRA Bleed Solution
+- **Option A:** Two-pass inpainting through existing providers (FAL/Together) — most practical
+- **Option B:** Composite LoRA training — best quality but requires training pipeline
+- **Option C:** RunPod/RunComfy serverless for ComfyUI regional attention — most flexible
+
+### Phase 3: Wan 2.2 Video Generation Bridge
 - Same architecture pattern as Flux bridge but for video generation
 - Target: Wan 2.2 model with character + style LoRAs
-- Expose video-gen API that SillyTavern (or a new plugin) can call
-- Key challenges: much longer generation times, higher compute cost, LoRA ecosystem for video is less mature
+- Expose video-gen API: `POST /wan/v2/video` (keep `/sdapi/v1/txt2img` stable for image gen)
+- Key challenges: much longer generation times (30-120s), higher compute cost, video LoRA ecosystem
+  is less mature, need longer proxy timeouts (`proxy_read_timeout 900`)
+- SillyTavern integration: new plugin or extend AutoImageGen to handle video responses
 - If multi-character LoRA bleed is solved for Flux, the same approach may transfer to Wan 2.2
+
+## Evaluated External Suggestions
+
+An external architecture review suggested a "bridge/gateway shim" pattern. Assessment against current code:
+
+**Already implemented (the bridge IS the shim):**
+- A1111-compatible API exposure (`/sdapi/v1/txt2img`) ✅
+- Provider-specific adapters with format translation ✅
+- LoRA keyword matching + auto-injection from config ✅
+- Normalized base64 response for all providers ✅
+- Provider fallback chain ✅
+
+**Worth implementing:**
+- Nginx Bearer token auth — quick win, ~10 min config change
+- Nginx rate limiting (`limit_req_zone`) — quick win
+- Block dangerous endpoints — quick win
+- Dynamic provider health routing (instead of static ordered fallback) — medium effort, high value
+- Per-token concurrency caps — medium effort, prevents one user from exhausting all providers
+
+**Not worth implementing (over-engineering for current scale):**
+- Separate "NormalizedJob" abstraction layer — the provider classes already do this
+- Character alias expansion (`{{char:arya}}`) — `master_lora_dict.json` keyword matching is better
+- Separate config.yaml for everything — current `.env` + JSON configs are sufficient
+- Full multi-tenant billing dashboard — premature until there are multiple users
 
 ## Quick Wins / Future Work
 
 ### High Priority
-- [ ] **Add auth to bridge** — simple API key or token check on `/sdapi/v1/txt2img` to prevent unauthorized usage
-- [ ] **Add rate limiting** — per-IP or per-token limit (e.g., 10 images/minute) to prevent cost runaway
+- [ ] **Nginx Bearer token auth** — add `Authorization: Bearer <token>` check, map in nginx config
+- [ ] **Nginx rate limiting** — `limit_req_zone` at 10r/m per IP with burst=5
+- [ ] **Block unused endpoints** — only expose `/sdapi/v1/txt2img`, return 403 for everything else
 - [ ] **Add spend tracking** — log provider + cost per request, alert when daily spend exceeds threshold
 
 ### Medium Priority
+- [ ] **Dynamic provider routing** — track provider health (success rate, latency, in-flight count), route to best available instead of static fallback order
+- [ ] **Two-pass inpainting for multi-char** — generate char A, detect regions, inpaint char B (FAL/Together)
 - [ ] **Plugin: read steps/cfg/size from SillyTavern settings** instead of hardcoding in generateImage()
 - [ ] **Plugin: add loading indicator** — show a spinner/placeholder while image generates
 - [ ] **Plugin: retry on failure** — if bridge returns error, retry once after 5s
@@ -172,9 +248,8 @@ The biggest unresolved problem. When a scene has multiple characters, their LoRA
 - [ ] **Split flux_lora_bridge.py** — extract providers into separate modules (currently 1700+ lines)
 
 ### Low Priority / Nice-to-Have
-- [ ] **Multi-tenant support** — per-user API keys, usage metering, billing dashboard
-- [ ] **User LoRA management** — let users upload/configure their own character LoRAs via web UI
+- [ ] **Per-token quotas** — rpm, rpd, max_concurrent per API token in bridge code
 - [ ] **Provider health dashboard** — `/status` endpoint showing real-time provider availability + latency
-- [ ] **WebSocket support** — stream generation progress to the plugin instead of waiting for full response
 - [ ] **Image caching** — cache generated images by prompt hash to avoid regenerating identical requests
+- [ ] **WebSocket support** — stream generation progress to the plugin instead of waiting for full response
 - [ ] **Plugin queue** — if multiple messages arrive quickly, queue generations instead of dropping them
