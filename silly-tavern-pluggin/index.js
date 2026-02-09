@@ -455,7 +455,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         console.log(`[AutoImageGen] 🌉 URL: ${bridgeUrl}`);
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const timeoutId = setTimeout(() => controller.abort(), 90000);
 
         try {
             const response = await fetch(bridgeUrl, {
@@ -483,7 +483,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
 
         } catch (e) {
             if (e.name === 'AbortError') {
-                console.error('[AutoImageGen] ❌ Image generation timed out after 30 seconds.');
+                console.error('[AutoImageGen] ❌ Image generation timed out after 90 seconds.');
             } else if (e instanceof TypeError) {
                 console.error(
                     '[AutoImageGen] ❌ Failed to reach bridge. Make sure Flux LoRA Bridge is running and reachable at:',
