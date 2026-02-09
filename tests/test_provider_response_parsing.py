@@ -185,6 +185,11 @@ class ProviderResponseParsingTests(unittest.IsolatedAsyncioTestCase):
         image = await client.generate("p", "", [], {"steps": 1, "cfg_scale": 1, "width": 512, "height": 512})
         self.assertEqual(image, b"together")
 
+    async def test_resolver_ignores_non_image_dict_fields(self):
+        payload = {"status": "ok", "prompt": "http://example.com/not-image", "meta": {"id": "123"}}
+        with self.assertRaises(ValueError):
+            await bridge._resolve_image_bytes_from_payload(payload, "TestProvider")
+
     async def test_hf_dict_base64(self):
         payload = base64.b64encode(b"hf").decode("utf-8")
 

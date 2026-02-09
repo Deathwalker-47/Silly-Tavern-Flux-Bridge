@@ -739,10 +739,6 @@ def _extract_image_candidate(payload):
                 cand = _extract_image_candidate(payload[key])
                 if cand is not None:
                     return cand
-        for value in payload.values():
-            cand = _extract_image_candidate(value)
-            if cand is not None:
-                return cand
     return None
 
 
