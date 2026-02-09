@@ -7,15 +7,33 @@
 (async function() {
     console.log('🎨 Auto Image Generator with LLM loading...');
 
-    const CONFIG = {
+    const DEFAULT_CONFIG = {
         BRIDGE_URL: "http://localhost:7861/sdapi/v1/txt2img",
-        OPENROUTER_API_KEY: "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",
+        OPENROUTER_API_KEY: "",
         OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
         LLM_MODEL: "deepseek/deepseek-chat",
         MESSAGE_COMPLETE_DELAY: 4000, // 4 seconds after last change
         CHECK_INTERVAL: 1000, // Fallback check every second
         MIN_MESSAGE_LENGTH: 20
     };
+
+    function loadConfig() {
+        const runtime = (typeof window !== 'undefined' && window.AUTO_IMAGE_UNIVERSAL_CONFIG)
+            ? window.AUTO_IMAGE_UNIVERSAL_CONFIG
+            : {};
+
+        let persisted = {};
+        try {
+            const raw = localStorage.getItem('autoImageUniversalConfig');
+            persisted = raw ? JSON.parse(raw) : {};
+        } catch (_) {
+            persisted = {};
+        }
+
+        return { ...DEFAULT_CONFIG, ...persisted, ...runtime };
+    }
+
+    const CONFIG = loadConfig();
 
     let lastProcessedMessage = '';
     let messageCompleteTimer = null;
@@ -319,6 +337,13 @@
     async function generateVisualPrompt(context, characterPrefix) {
         console.log('[AutoImageGen] 🤖 Using LLM to generate visual prompt...');
 
+        if (!CONFIG.OPENROUTER_API_KEY) {
+            const lastMsg = (context && context.length > 0) ? context[context.length - 1] : { content: '' };
+            const cleanContent = cleanPrompt((lastMsg.content || '').substring(0, 150));
+            const fallback = cleanContent || 'portrait, cinematic lighting, detailed face, realistic skin, high detail';
+            return characterPrefix ? `${characterPrefix}, ${fallback}` : fallback;
+        }
+
         const conversationText = context.map(msg =>
             `${msg.name}: ${msg.content}`
         ).join('\n');
@@ -378,11 +403,12 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
 
         } catch (e) {
             console.error('[AutoImageGen] ❌ LLM failed:', e);
-            const lastMsg = context[context.length - 1];
-            const cleanContent = cleanPrompt(lastMsg.content.substring(0, 100));
+            const lastMsg = (context && context.length > 0) ? context[context.length - 1] : { content: '' };
+            const cleanContent = cleanPrompt((lastMsg.content || '').substring(0, 100));
+            const fallback = cleanContent || 'portrait, cinematic lighting, detailed face, realistic skin, high detail';
             return characterPrefix
-                ? `${characterPrefix}, ${cleanContent}`
-                : cleanContent;
+                ? `${characterPrefix}, ${fallback}`
+                : fallback;
         }
     }
 
@@ -499,6 +525,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         console.log('[AutoImageGen] ✅ Ready - watching for messages');
         console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
         console.log(`[AutoImageGen] 🌉 Bridge: ${CONFIG.BRIDGE_URL}`);
+        console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
     }
 
     // Wait for page load

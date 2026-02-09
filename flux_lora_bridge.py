@@ -240,8 +240,8 @@ app.add_middleware(
 )
 
 YOU_COM_AGENT_RUNS = "https://api.you.com/v1/agents/runs"
-YOU_COM_API_KEY = 'ydc-sk-da5e06e668511d48-WS0AeNsdg9CYqU8sfYFTeBynt6kyz8kP-1057c2cb'
-YOU_COM_DEFAULT_AGENT = 'a67dd509-a4b2-4115-b43d-2bf897d39022'
+YOU_COM_API_KEY = os.getenv("YOU_COM_API_KEY", "")
+YOU_COM_DEFAULT_AGENT = os.getenv("YOU_COM_DEFAULT_AGENT", "")
 
 YOU_PROXY_REDACT_PROMPTS = True
 OPENROUTER_COMPAT = True
@@ -297,11 +297,11 @@ class Config:
     LORA_DICT_PATH = os.getenv("LORA_DICT_PATH", "master_lora_dict.json")
     
     # HuggingFace Space (Fallback via Gradio)
-    HF_SPACE_NAME = os.getenv("HF_SPACE_NAME", "anujithc/flux-dev-lora-private")
-    HF_TOKEN = os.getenv("HF_TOKEN", "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")
+    HF_SPACE_NAME = os.getenv("HF_SPACE_NAME", "")
+    HF_TOKEN = os.getenv("HF_TOKEN", "")
 
     # Runware (Primary)
-    RUNWARE_API_KEY = os.getenv("RUNWARE_API_KEY", "EaFpNcjTMRgqkGd7n8r7mEoBQiseQ1B9")
+    RUNWARE_API_KEY = os.getenv("RUNWARE_API_KEY", "")
     RUNWARE_ENDPOINT = os.getenv("RUNWARE_ENDPOINT", "https://api.runware.ai/v1")
     # RUNWARE_MODEL = os.getenv("RUNWARE_MODEL", "rundiffusion:130@100")   # Juggernaut pro
     # RUNWARE_MODEL = os.getenv("RUNWARE_MODEL", "deathwalker:1000007@1")  # Persephone nsfw
@@ -309,22 +309,22 @@ class Config:
     RUNWARE_MODEL = os.getenv("RUNWARE_MODEL", "runware:101@1")  # base flux dev
 
     # Atlas Cloud (LEGACY/REMOVED)
-    ATLASCLOUD_API_KEY = os.getenv("ATLASCLOUD_API_KEY", "apikey-5d0f38e2a7a44f0d81229a4aff69e588")
+    ATLASCLOUD_API_KEY = os.getenv("ATLASCLOUD_API_KEY", "")
     ATLASCLOUD_ENDPOINT = "https://api.atlascloud.ai/v1/text2image"
     
     # Pixel Dojo (SECONDARY)
-    PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "pd_3ce511f94a270954a5dc7d0ee24f02d38c924bbbae117f24")
+    PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "")
     PIXELDOJO_ENDPOINT = "https://api.pixeldojo.ai/v1/generate"
     
     # Wavespeed (TERTIARY)
-    WAVESPEED_API_KEY = os.getenv("WAVESPEED_API_KEY", "606b2aea27b686883ae262efce9398f5513e4cbb11bfd7f85900017ef723c9b9")
+    WAVESPEED_API_KEY = os.getenv("WAVESPEED_API_KEY", "")
     WAVESPEED_ENDPOINT = "https://api.wavespeed.ai/api/v3/wavespeed-ai/flux-dev-lora"
 
-    FAL_API_KEY = os.getenv("FAL_API_KEY", "199fd3a6-5259-4e92-8f73-f02dc8f82ce3:72cdbf8445031d24e99c26fb21960210")
+    FAL_API_KEY = os.getenv("FAL_API_KEY", "")
     FAL_ENDPOINT = "https://queue.fal.run/fal-ai/flux-lora"
 
     # DeepSeek V3 Summarization (Together AI)
-    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "tgpv1c8bZ8l-5iPB32gQ2UN2ZuoWWIjvqbrkBuGLPLhiPms")
+    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
     DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V3"
     ENABLE_SUMMARIZATION = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
     SUMMARY_MAX_LENGTH = int(os.getenv("SUMMARY_MAX_LENGTH", 300))
@@ -694,6 +694,78 @@ class ProviderClient:
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
         raise NotImplementedError
 
+
+def _strip_data_uri_prefix(value: str) -> str:
+    if isinstance(value, str) and value.startswith("data:") and "," in value:
+        return value.split(",", 1)[1]
+    return value
+
+
+def _try_decode_base64(value: str) -> Optional[bytes]:
+    if not isinstance(value, str):
+        return None
+    candidate = _strip_data_uri_prefix(value).strip()
+    if candidate.startswith("http://") or candidate.startswith("https://"):
+        return None
+    try:
+        return base64.b64decode(candidate, validate=True)
+    except Exception:
+        return None
+
+
+def _extract_image_candidate(payload):
+    if payload is None:
+        return None
+    if isinstance(payload, (bytes, bytearray)):
+        return bytes(payload)
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, list):
+        for item in payload:
+            cand = _extract_image_candidate(item)
+            if cand is not None:
+                return cand
+        return None
+    if isinstance(payload, dict):
+        direct_keys = ("imageURL", "image_url", "imageUrl", "image", "url", "b64_json", "base64")
+        for key in direct_keys:
+            if key in payload and payload[key]:
+                cand = _extract_image_candidate(payload[key])
+                if cand is not None:
+                    return cand
+        container_keys = ("data", "output", "outputs", "images", "result", "results")
+        for key in container_keys:
+            if key in payload and payload[key] is not None:
+                cand = _extract_image_candidate(payload[key])
+                if cand is not None:
+                    return cand
+        for value in payload.values():
+            cand = _extract_image_candidate(value)
+            if cand is not None:
+                return cand
+    return None
+
+
+async def _resolve_image_bytes_from_payload(payload, provider_name: str) -> bytes:
+    candidate = _extract_image_candidate(payload)
+    if candidate is None:
+        raise ValueError(f"[{provider_name}] No image candidate found in payload")
+
+    if isinstance(candidate, (bytes, bytearray)):
+        return bytes(candidate)
+
+    if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            img_response = await client.get(candidate)
+            img_response.raise_for_status()
+            return img_response.content
+
+    decoded = _try_decode_base64(candidate) if isinstance(candidate, str) else None
+    if decoded is not None:
+        return decoded
+
+    raise ValueError(f"[{provider_name}] Unsupported image payload format")
+
 # ============================================
 # RUNWARE CLIENT (PRIMARY)
 # ============================================
@@ -759,16 +831,10 @@ class RunwareClient(ProviderClient):
                 logger.error(f"🌐 [Runware] API Error {response.status_code}: {response.text}")
                 raise Exception(f"Runware API error: {response.status_code}")
             
-            data = response.json()['data']
-            if not data or len(data) == 0 or "imageURL" not in data[0]:
-                logger.error("🌐 [Runware] Unexpected response format")
-                raise Exception("Unexpected Runware response format")
-            
-            image_url = data[0]["imageURL"]
-            logger.info(f"🌐 [Runware] Image URL: {image_url}")
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                img_response = await client.get(image_url)
-            return img_response.content
+            result = response.json()
+            image_bytes = await _resolve_image_bytes_from_payload(result, "Runware")
+            logger.info(f"✅ [Runware] Image resolved ({len(image_bytes)} bytes)")
+            return image_bytes
         
         except Exception as e:
             logger.error(f"🌐 [Runware] ❌ FAILED: {e}")
@@ -788,6 +854,10 @@ class PixelDojoClient(ProviderClient):
     
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
         """Generate image with multiple LoRAs via Pixel Dojo API"""
+        if not self.api_key:
+            logger.error("❌ [Pixel Dojo] PIXELDOJO_API_KEY not configured")
+            raise ValueError("PIXELDOJO_API_KEY not configured")
+
         logger.info(f"🎨 [Pixel Dojo] ===== GENERATION REQUEST =====")
         logger.info(f"🎨 [Pixel Dojo] Generating with {len(loras)} LoRAs")
         logger.info(f"🎨 [Pixel Dojo] Prompt ({len(prompt.split())} words): {prompt}")
@@ -808,18 +878,20 @@ class PixelDojoClient(ProviderClient):
             "prompt": prompt,
             "negative_prompt": negative_prompt,
             "model": "flux-dev-single-lora",
-            "lora_weights": loras_formatted[0]["url"],
-            "lora_scale": loras_formatted[0]["weight"],
             "num_inference_steps": params.get("steps", 20),
             "guidance_scale": params.get("cfg_scale", 3.5),
             "height": params.get("height", 1024),
             "width": params.get("width", 1024),
             "seed": params.get("seed", -1),
             "output_quality": 100,
-            "num_outputs": 2,
+            "num_outputs": 1,
             "output_format": "jpeg",
             "go_fast": False
         }
+        if loras_formatted:
+            payload["lora_weights"] = loras_formatted[0]["url"]
+            payload["lora_scale"] = loras_formatted[0]["weight"]
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -832,19 +904,9 @@ class PixelDojoClient(ProviderClient):
                 logger.error(f"🎨 [Pixel Dojo] API Error {response.status_code}")
                 raise Exception(f"Pixel Dojo API error: {response.status_code}")
             result = response.json()
-            if "image" in result:
-                image_data = result["image"]
-                if image_data.startswith("http"):
-                    logger.info(f"🎨 [Pixel Dojo] Image is URL, downloading...")
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        img_response = await client.get(image_data)
-                    return img_response.content
-                else:
-                    logger.info(f"🎨 [Pixel Dojo] Image is base64 string")
-                    return base64.b64decode(image_data)
-            else:
-                logger.error(f"🎨 [Pixel Dojo] Unexpected response keys: {list(result.keys())}")
-                raise Exception("Unexpected Pixel Dojo response format")
+            image_bytes = await _resolve_image_bytes_from_payload(result, "Pixel Dojo")
+            logger.info(f"✅ [Pixel Dojo] Image resolved ({len(image_bytes)} bytes)")
+            return image_bytes
         except Exception as e:
             logger.error(f"🎨 [Pixel Dojo] ❌ FAILED: {e}")
             raise
@@ -866,7 +928,7 @@ class WavespeedClient(ProviderClient):
         logger.info(f"🌊 [Wavespeed] Negative prompt: {negative_prompt}")
         logger.info(f"🌊 [Wavespeed] Parameters: steps={params.get('steps')}, cfg={params.get('cfg_scale')}, size={params.get('width')}x{params.get('height')}, seed={params.get('seed')}")
         
-        limited_loras = loras[:4]
+        limited_loras = loras[:Config.MAXLORAS_WAVESPEED]
         if len(limited_loras) < len(loras):
             logger.warning(f"⚠️ [Wavespeed] Limiting LoRAs from {len(loras)} to {len(limited_loras)} (Wavespeed max)")
         
@@ -907,20 +969,9 @@ class WavespeedClient(ProviderClient):
             result = response.json()
             logger.info(f"🌊 [Wavespeed] Response keys: {list(result.keys())}")
             
-            if "data" in result and "outputs" in result["data"]:
-                image_url = result["data"]["outputs"][0]
-                logger.info(f"✅ [Wavespeed] Image URL from data.outputs[0]: {image_url}")
-                
-                logger.info(f"🌊 [Wavespeed] Downloading image from URL...")
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    img_response = await client.get(image_url)
-                
-                logger.info(f"✅ [Wavespeed] Image downloaded successfully ({len(img_response.content)} bytes)")
-                return img_response.content
-            else:
-                logger.error(f"❌ [Wavespeed] Unexpected response format. Keys: {list(result.keys())}")
-                logger.error(f"❌ [Wavespeed] Full response: {result}")
-                raise Exception("Unexpected Wavespeed response format")
+            image_bytes = await _resolve_image_bytes_from_payload(result, "Wavespeed")
+            logger.info(f"✅ [Wavespeed] Image resolved ({len(image_bytes)} bytes)")
+            return image_bytes
                 
         except Exception as e:
             logger.error(f"❌ [Wavespeed] FAILED: {e}")
@@ -945,11 +996,11 @@ class FALClient(ProviderClient):
             raise ValueError("FAL_API_KEY not configured")
         
         logger.info(f"🎨 [FAL] GENERATION REQUEST")
-        logger.info(f"🎨 [FAL] Generating with {len(loras)} LoRAs (max {Config.MAX_LORAS_FAL})")
+        logger.info(f"🎨 [FAL] Generating with {len(loras)} LoRAs (max {Config.MAXLORAS_FAL})")
         logger.info(f"🎨 [FAL] Prompt: {len(prompt.split())} words: {prompt}")
         logger.info(f"🎨 [FAL] Negative prompt: {negative_prompt}")
         
-        limited_loras = loras[:Config.MAX_LORAS_FAL]
+        limited_loras = loras[:Config.MAXLORAS_FAL]
         if len(limited_loras) < len(loras):
             logger.warning(f"⚠️ [FAL] Limiting LoRAs from {len(loras)} to {len(limited_loras)}")
         
@@ -1000,19 +1051,9 @@ class FALClient(ProviderClient):
             result = response.json()
             logger.info(f"🎨 [FAL] Response keys: {list(result.keys())}")
             
-            if "images" in result and len(result["images"]) > 0:
-                image_url = result["images"][0]["url"]
-                logger.info(f"✅ [FAL] Image URL from images[0].url: {image_url}")
-                
-                logger.info(f"🎨 [FAL] Downloading image from URL...")
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    img_response = await client.get(image_url)
-                
-                logger.info(f"✅ [FAL] Image downloaded successfully ({len(img_response.content)} bytes)")
-                return img_response.content
-            else:
-                logger.error(f"❌ [FAL] Unexpected response format: {result}")
-                raise Exception("No images in FAL response")
+            image_bytes = await _resolve_image_bytes_from_payload(result, "FAL")
+            logger.info(f"✅ [FAL] Image resolved ({len(image_bytes)} bytes)")
+            return image_bytes
                 
         except Exception as e:
             logger.error(f"❌ [FAL] FAILED: {e}")
@@ -1027,24 +1068,29 @@ class TogetherAIClient(ProviderClient):
     """Together AI client using official SDK"""
     
     def __init__(self):
-        from together import Together as TogetherSDK
         self.client = None
+        try:
+            from together import Together as TogetherSDK
+        except ImportError:
+            logger.warning("⚠️ [Together AI] SDK not installed")
+            return
+
         if Config.TOGETHER_API_KEY:
             self.client = TogetherSDK(api_key=Config.TOGETHER_API_KEY)
             logger.info("🤝 [Together AI] Client initialized with official SDK")
         else:
-            logger.warning("⚠️ [Together AI] SDK not available or API key missing")
+            logger.warning("⚠️ [Together AI] SDK available but API key missing")
     
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
         if not self.client:
             raise ValueError("Together AI client not initialized")
         
         logger.info(f"🤝 [Together AI] GENERATION REQUEST")
-        logger.info(f"🤝 [Together AI] Generating with {len(loras)} LoRAs (max {Config.MAX_LORAS_TOGETHER})")
+        logger.info(f"🤝 [Together AI] Generating with {len(loras)} LoRAs (max {Config.MAXLORAS_TOGETHER})")
         logger.info(f"🤝 [Together AI] Prompt: {len(prompt.split())} words: {prompt}")
         logger.info(f"🤝 [Together AI] Negative prompt: {negative_prompt}")
         
-        limited_loras = loras[:Config.MAX_LORAS_TOGETHER]
+        limited_loras = loras[:Config.MAXLORAS_TOGETHER]
         if len(limited_loras) < len(loras):
             logger.warning(f"⚠️ [Together AI] Limiting LoRAs from {len(loras)} to {len(limited_loras)}")
         
@@ -1087,10 +1133,10 @@ class TogetherAIClient(ProviderClient):
                     return base64.b64decode(b64_data)
             
             elif isinstance(response, dict):
-                items = response.get("images") or response.get("data") or []
-                if items and isinstance(items[0], dict):
-                    image_url = items[0].get("url")
-            
+                image_bytes = await _resolve_image_bytes_from_payload(response, "Together")
+                logger.info(f"✅ [Together AI] Image resolved ({len(image_bytes)} bytes)")
+                return image_bytes
+
             if not image_url:
                 logger.error(f"❌ [Together AI] No image URL found in response")
                 raise RuntimeError("Together returned no image URL")
@@ -1138,7 +1184,7 @@ class HFZeroGPUClient(ProviderClient):
             raise ValueError("Gradio client not available")
         
         logger.info(f"🤗 [HF ZeroGPU] GENERATION REQUEST")
-        logger.info(f"🤗 [HF ZeroGPU] Generating with {len(loras)} LoRAs (capped at {Config.MAX_LORAS_HF})")
+        logger.info(f"🤗 [HF ZeroGPU] Generating with {len(loras)} LoRAs (capped at {Config.MAXLORAS_HF})")
         logger.info(f"🤗 [HF ZeroGPU] Prompt: {len(prompt.split())} words: {prompt}")
         logger.info(f"🤗 [HF ZeroGPU] Negative prompt: {negative_prompt}")
         logger.info(f"🤗 [HF ZeroGPU] Parameters: steps={params.get('steps')}, cfg={params.get('cfg_scale')}, size={params.get('width')}x{params.get('height')}")
@@ -1170,29 +1216,9 @@ class HFZeroGPUClient(ProviderClient):
             
             logger.info(f"🤗 [HF ZeroGPU] Gradio response received, type: {type(result)}")
             
-            if isinstance(result, list):
-                image_data = result[0]
-            else:
-                image_data = result
-            
-            if isinstance(image_data, str):
-                if image_data.startswith("http"):
-                    logger.info("🤗 [HF ZeroGPU] Image URL returned, downloading...")
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        img_response = await client.get(image_data)
-                    logger.info(f"✅ [HF ZeroGPU] Image downloaded ({len(img_response.content)} bytes)")
-                    return img_response.content
-                else:
-                    logger.info("🤗 [HF ZeroGPU] Base64 string returned, decoding...")
-                    decoded = base64.b64decode(image_data)
-                    logger.info(f"✅ [HF ZeroGPU] Image decoded ({len(decoded)} bytes)")
-                    return decoded
-            elif isinstance(image_data, bytes):
-                logger.info(f"✅ [HF ZeroGPU] Image bytes returned ({len(image_data)} bytes)")
-                return image_data
-            else:
-                logger.error(f"❌ [HF ZeroGPU] Unexpected result type: {type(image_data)}")
-                raise ValueError("Unexpected HF ZeroGPU response format")
+            image_bytes = await _resolve_image_bytes_from_payload(result, "HF ZeroGPU")
+            logger.info(f"✅ [HF ZeroGPU] Image resolved ({len(image_bytes)} bytes)")
+            return image_bytes
                 
         except Exception as e:
             logger.error(f"❌ [HF ZeroGPU] FAILED: {e}")
@@ -1513,6 +1539,9 @@ def safe_log_payload(payload: dict) -> dict:
 # -------------------------------
 
 def build_youcom_body_from_openai(payload: dict) -> dict:
+    if not YOU_COM_API_KEY:
+        raise HTTPException(status_code=500, detail="YOU_COM_API_KEY is not configured")
+
     messages = payload.get("messages", [])
 
     system_msgs = []
@@ -1526,8 +1555,12 @@ def build_youcom_body_from_openai(payload: dict) -> dict:
 
     combined_input = "\n".join(system_msgs) + "\n\n" + "\n\n".join(user_msgs)
 
+    agent_id = payload.get("agent_id") or YOU_COM_DEFAULT_AGENT
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Missing You.com agent id. Set YOU_COM_DEFAULT_AGENT or pass agent_id")
+
     return {
-        "agent": payload.get("agent_id") or YOU_COM_DEFAULT_AGENT,
+        "agent": agent_id,
         "input": combined_input.strip(),
         "stream": bool(payload.get("stream")),
         "metadata": {
