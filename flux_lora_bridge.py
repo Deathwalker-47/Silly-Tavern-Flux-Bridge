@@ -314,7 +314,7 @@ class Config:
     
     # Pixel Dojo (SECONDARY)
     PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "")
-    PIXELDOJO_ENDPOINT = "https://api.pixeldojo.ai/v1/generate"
+    PIXELDOJO_ENDPOINT = "https://pixeldojo.ai/api/v1/flux"
     
     # Wavespeed (TERTIARY)
     WAVESPEED_API_KEY = os.getenv("WAVESPEED_API_KEY", "")
@@ -844,53 +844,64 @@ class RunwareClient(ProviderClient):
 # PIXEL DOJO CLIENT (SECONDARY)
 # ============================================
 class PixelDojoClient(ProviderClient):
-    """Pixel Dojo API client - $0.125 per image, 15 LoRAs"""
-    
+    """Pixel Dojo API client - 1 credit per image, single LoRA via flux-dev-single-lora"""
+
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.endpoint = Config.PIXELDOJO_ENDPOINT
         logger.info(f"🎨 [Pixel Dojo] Client initialized - Endpoint: {self.endpoint}")
         logger.info(f"🎨 [Pixel Dojo] API Key configured: {bool(api_key)}")
-    
+
+    @staticmethod
+    def _dimensions_to_aspect_ratio(width: int, height: int) -> str:
+        """Map width x height to closest supported aspect ratio."""
+        ratio = width / height
+        # Supported: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3
+        options = [
+            (1.0, "1:1"),
+            (16 / 9, "16:9"),
+            (9 / 16, "9:16"),
+            (4 / 3, "4:3"),
+            (3 / 4, "3:4"),
+            (3 / 2, "3:2"),
+            (2 / 3, "2:3"),
+        ]
+        return min(options, key=lambda o: abs(o[0] - ratio))[1]
+
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
-        """Generate image with multiple LoRAs via Pixel Dojo API"""
+        """Generate image via Pixel Dojo Flux API"""
         if not self.api_key:
             logger.error("❌ [Pixel Dojo] PIXELDOJO_API_KEY not configured")
             raise ValueError("PIXELDOJO_API_KEY not configured")
 
+        width = params.get("width", 1024)
+        height = params.get("height", 1024)
+        aspect_ratio = self._dimensions_to_aspect_ratio(width, height)
+
         logger.info(f"🎨 [Pixel Dojo] ===== GENERATION REQUEST =====")
         logger.info(f"🎨 [Pixel Dojo] Generating with {len(loras)} LoRAs")
         logger.info(f"🎨 [Pixel Dojo] Prompt ({len(prompt.split())} words): {prompt}")
-        logger.info(f"🎨 [Pixel Dojo] Negative prompt: {negative_prompt}")
-        logger.info(f"🎨 [Pixel Dojo] Parameters: steps={params.get('steps')}, cfg={params.get('cfg_scale')}, size={params.get('width')}x{params.get('height')}, seed={params.get('seed')}")
-        
-        loras_formatted = []
-        for lora in loras:
-            loras_formatted.append({
-                "url": lora.get("url"),
-                "weight": lora.get("weight", 1.0)
-            })
-            logger.info(f"🎨 [Pixel Dojo] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Weight: {lora.get('weight')}")
-        
-        logger.info(f"🎨 [Pixel Dojo] Total LoRAs to send: {len(loras_formatted)}")
-        
+        logger.info(f"🎨 [Pixel Dojo] Parameters: aspect_ratio={aspect_ratio} (from {width}x{height}), seed={params.get('seed')}")
+
         payload = {
             "prompt": prompt,
-            "negative_prompt": negative_prompt,
             "model": "flux-dev-single-lora",
-            "num_inference_steps": params.get("steps", 20),
-            "guidance_scale": params.get("cfg_scale", 3.5),
-            "height": params.get("height", 1024),
-            "width": params.get("width", 1024),
-            "seed": params.get("seed", -1),
-            "output_quality": 100,
+            "aspect_ratio": aspect_ratio,
             "num_outputs": 1,
-            "output_format": "jpeg",
-            "go_fast": False
+            "output_format": "png",
+            "output_quality": 100,
         }
-        if loras_formatted:
-            payload["lora_weights"] = loras_formatted[0]["url"]
-            payload["lora_scale"] = loras_formatted[0]["weight"]
+
+        seed = params.get("seed", -1)
+        if seed and seed > 0:
+            payload["seed"] = seed
+
+        # Pixel Dojo supports a single LoRA for flux-dev-single-lora
+        if loras:
+            lora = loras[0]
+            payload["lora_weights"] = lora.get("url", "")
+            payload["lora_scale"] = lora.get("weight", 0.7)
+            logger.info(f"🎨 [Pixel Dojo] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Scale: {lora.get('weight')}")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -901,9 +912,20 @@ class PixelDojoClient(ProviderClient):
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(self.endpoint, json=payload, headers=headers)
             if response.status_code != 200:
-                logger.error(f"🎨 [Pixel Dojo] API Error {response.status_code}")
-                raise Exception(f"Pixel Dojo API error: {response.status_code}")
+                error_detail = ""
+                try:
+                    err = response.json()
+                    if "error" in err and "message" in err["error"]:
+                        error_detail = f": {err['error']['message']}"
+                except Exception:
+                    error_detail = f": {response.text[:200]}"
+                logger.error(f"🎨 [Pixel Dojo] API Error {response.status_code}{error_detail}")
+                raise Exception(f"Pixel Dojo API error: {response.status_code}{error_detail}")
+
             result = response.json()
+            logger.info(f"🎨 [Pixel Dojo] Response keys: {list(result.keys())}")
+
+            # Response format: {"images": [url_or_dict, ...]}
             image_bytes = await _resolve_image_bytes_from_payload(result, "Pixel Dojo")
             logger.info(f"✅ [Pixel Dojo] Image resolved ({len(image_bytes)} bytes)")
             return image_bytes
