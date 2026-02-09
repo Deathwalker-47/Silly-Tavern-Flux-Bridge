@@ -131,6 +131,31 @@ PIXELDOJO_API_KEY=...
 3. **Wavespeed + FAL are async:** They return queued jobs. Code must poll for results.
 4. **Plugin runs in browser:** Any URL it calls must be reachable from the user's browser, NOT from the server. `localhost:7861` will never work for remote users.
 5. **No auth on bridge:** Anyone who discovers `bridge.midnighttavern.online` can generate images on your API credits.
+6. **Multi-character LoRA bleed:** When multiple character LoRAs are active in a single generation, features bleed between characters (e.g., hair color, clothing, face shape mixing). This is a fundamental limitation of how Flux (and SD-based models generally) handle multiple LoRAs — each LoRA adjusts the same weight space, and with 2+ character LoRAs the model can't cleanly separate which tokens should be influenced by which LoRA. Current mitigations attempted: prompt ordering, keyword isolation, weight tuning. None fully solve it. Potential approaches worth investigating:
+   - **Merged/composite LoRAs** — train a single LoRA on scenes with multiple characters together, so the model learns their co-existence
+   - **Regional prompting / attention masking** — assign each LoRA's influence to a spatial region of the image (some ComfyUI nodes support this)
+   - **Two-pass inpainting** — generate one character, then inpaint the second into the scene with only that character's LoRA active
+   - **IP-Adapter / reference image conditioning** — use reference images instead of (or alongside) LoRAs for character identity
+
+## Current Challenges
+
+### Multi-Character LoRA Bleed (Critical)
+The biggest unresolved problem. When a scene has multiple characters, their LoRA features bleed into each other. All prompt-level mitigations have been exhausted — this likely requires a fundamentally different approach (composite LoRAs, regional attention, or multi-pass generation). This is the main bottleneck preventing production-quality multi-character scenes.
+
+## Roadmap
+
+### Phase 1: Current — Flux LoRA Bridge (this project)
+- Image generation bridge with 6 provider fallback
+- Character LoRA auto-injection from `master_lora_dict.json`
+- DeepSeek V3 prompt summarization
+- SillyTavern AutoImageGen plugin integration
+
+### Phase 2: Next — Wan 2.2 Video Generation Bridge
+- Same architecture pattern as Flux bridge but for video generation
+- Target: Wan 2.2 model with character + style LoRAs
+- Expose video-gen API that SillyTavern (or a new plugin) can call
+- Key challenges: much longer generation times, higher compute cost, LoRA ecosystem for video is less mature
+- If multi-character LoRA bleed is solved for Flux, the same approach may transfer to Wan 2.2
 
 ## Quick Wins / Future Work
 
