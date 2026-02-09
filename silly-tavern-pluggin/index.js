@@ -35,6 +35,21 @@
 
     const CONFIG = loadConfig();
 
+    function normalizeBridgeUrl(rawUrl) {
+        if (!rawUrl || typeof rawUrl !== 'string') {
+            return DEFAULT_CONFIG.BRIDGE_URL;
+        }
+
+        const trimmed = rawUrl.trim().replace(/\/$/, '');
+        if (!trimmed) return DEFAULT_CONFIG.BRIDGE_URL;
+
+        return trimmed.endsWith('/sdapi/v1/txt2img')
+            ? trimmed
+            : `${trimmed}/sdapi/v1/txt2img`;
+    }
+
+    const BRIDGE_TXT2IMG_URL = normalizeBridgeUrl(CONFIG.BRIDGE_URL);
+
     let lastProcessedMessage = '';
     let messageCompleteTimer = null;
     let isProcessing = false;
@@ -419,11 +434,16 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
     async function generateImage(prompt) {
         console.log('[AutoImageGen] 🎨 Sending to bridge...');
         console.log(`[AutoImageGen] 📝 Prompt: ${prompt.substring(0, 100)}...`);
+        console.log(`[AutoImageGen] 🌉 URL: ${BRIDGE_TXT2IMG_URL}`);
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         try {
-            const response = await fetch(CONFIG.BRIDGE_URL, {
+            const response = await fetch(BRIDGE_TXT2IMG_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                     prompt: prompt,
                     negative_prompt: "ugly, deformed, blurry, low quality, bad anatomy, text, watermark, words, letters, anatomical diagram, medical diagram",
@@ -444,8 +464,19 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
             return data.images[0];
 
         } catch (e) {
-            console.error('[AutoImageGen] ❌ Image generation failed:', e);
+            if (e.name === 'AbortError') {
+                console.error('[AutoImageGen] ❌ Image generation timed out after 30 seconds.');
+            } else if (e instanceof TypeError) {
+                console.error(
+                    '[AutoImageGen] ❌ Failed to reach bridge. Make sure Flux LoRA Bridge is running and reachable at:',
+                    BRIDGE_TXT2IMG_URL
+                );
+            } else {
+                console.error('[AutoImageGen] ❌ Image generation failed:', e);
+            }
             return null;
+        } finally {
+            clearTimeout(timeoutId);
         }
     }
 
@@ -524,7 +555,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         startFallbackCheck();
         console.log('[AutoImageGen] ✅ Ready - watching for messages');
         console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
-        console.log(`[AutoImageGen] 🌉 Bridge: ${CONFIG.BRIDGE_URL}`);
+        console.log(`[AutoImageGen] 🌉 Bridge: ${BRIDGE_TXT2IMG_URL}`);
         console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
     }
 
