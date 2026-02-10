@@ -167,9 +167,22 @@ limitation of LoRA-based diffusion models (Flux, SD, etc.), not a code problem.
 4. **IP-Adapter / reference image conditioning** — Use reference images instead of LoRAs for character
    identity. Avoids the LoRA weight collision entirely but requires different model pipeline.
 
-**Note on Wan 2.2 for multi-char:** Wan 2.2 is a video model and will NOT solve multi-char LoRA bleed.
-Video models have more complex attention than image models — if anything, multi-LoRA bleed would be
-worse. Wan 2.2's value is for video generation as a separate feature, not as a fix for this problem.
+**Note on Wan 2.2 T2I for multi-char (researched 2026-02-10):**
+Wan 2.2 "T2I" is not a separate image model — it's the video model (`Wan2.2-T2V-A14B`) with `frames=1`.
+Providers like FAL and WaveSpeed wrap it as a convenience endpoint. It will NOT solve multi-char LoRA bleed:
+- Same DiT architecture as Flux — LoRAs still modify shared attention weights
+- Wan 2.2 uses a **dual-expert MoE** (high-noise + low-noise transformers), so LoRA bleed happens in
+  **two** weight spaces. LoRAs must target `"high"`, `"low"`, or `"both"` experts — adding complexity
+  without solving the fundamental collision. Community reports confirm identical bleed: "muddy" results,
+  ghosting, prompt drift when stacking identity LoRAs.
+- Only 2 of our 6 providers support it (FAL, WaveSpeed) — would lose 4 fallback providers
+- Would require retraining all ~40 character LoRAs for a different base model
+- Image consistency is worse than Flux (lower "good to bad ratio" per community testing)
+- Flux wins on artistic composition, lighting, and cinematic feel; Wan 2.2 wins on hand/feet accuracy
+  and native high-res, but the hit rate is significantly lower
+
+**Bottom line:** Switching to Wan 2.2 T2I for multi-char would make the problem harder, not easier.
+Flux remains the right base for image generation. Wan 2.2's value is for video generation (Phase 3).
 
 ### Provider Landscape Constraints
 Extensive research (months) found only 6 providers that support both multi-LoRA AND full NSFW allowance.
