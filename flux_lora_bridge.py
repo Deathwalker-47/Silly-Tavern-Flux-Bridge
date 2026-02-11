@@ -1111,8 +1111,8 @@ class FALClient(ProviderClient):
             result = response.json()
             logger.info(f"🎨 [FAL] Response keys: {list(result.keys())}")
 
-            # Check for direct result (images in response)
-            if "images" in result:
+            # Check for direct result (images in response or nested in data)
+            if "images" in result or ("data" in result and isinstance(result.get("data"), dict) and "images" in result["data"]):
                 image_bytes = await _resolve_image_bytes_from_payload(result, "FAL")
                 logger.info(f"✅ [FAL] Image resolved immediately ({len(image_bytes)} bytes)")
                 return image_bytes
