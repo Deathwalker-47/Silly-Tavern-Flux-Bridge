@@ -766,6 +766,18 @@ async def _resolve_image_bytes_from_payload(payload, provider_name: str) -> byte
 
     raise ValueError(f"[{provider_name}] Unsupported image payload format")
 
+
+def _validate_image_bytes(data: bytes, provider_name: str) -> None:
+    """Raise ValueError if data doesn't start with a known image magic number."""
+    if len(data) < 4:
+        raise ValueError(f"[{provider_name}] Image data too small ({len(data)} bytes)")
+    if not (data[:3] == b'\xff\xd8\xff' or       # JPEG
+            data[:4] == b'\x89PNG' or              # PNG
+            data[:4] == b'RIFF' or                 # WEBP
+            data[:4] == b'GIF8'):                  # GIF
+        raise ValueError(f"[{provider_name}] Downloaded data is not a valid image (first bytes: {data[:16].hex()})")
+
+
 # ============================================
 # RUNWARE CLIENT (PRIMARY)
 # ============================================
@@ -1227,15 +1239,20 @@ class TogetherAIClient(ProviderClient):
             logger.info(f"🤝 [Together AI] SDK response received")
             
             image_url = None
-            
+
             if hasattr(response, 'data') and response.data:
-                if hasattr(response.data[0], 'url'):
-                    image_url = response.data[0].url
-                elif hasattr(response.data[0], 'b64_json'):
-                    b64_data = response.data[0].b64_json
+                first = response.data[0]
+                # Check the VALUE, not just attribute existence — SDK objects
+                # always define both .url and .b64_json, but one will be None
+                url_val = getattr(first, 'url', None)
+                b64_val = getattr(first, 'b64_json', None)
+
+                if url_val:
+                    image_url = url_val
+                elif b64_val:
                     logger.info(f"✅ [Together AI] Received base64 image")
-                    return base64.b64decode(b64_data)
-            
+                    return base64.b64decode(b64_val)
+
             elif isinstance(response, dict):
                 image_bytes = await _resolve_image_bytes_from_payload(response, "Together")
                 logger.info(f"✅ [Together AI] Image resolved ({len(image_bytes)} bytes)")
@@ -1244,13 +1261,14 @@ class TogetherAIClient(ProviderClient):
             if not image_url:
                 logger.error(f"❌ [Together AI] No image URL found in response")
                 raise RuntimeError("Together returned no image URL")
-            
+
             logger.info(f"✅ [Together AI] Image URL: {image_url}")
-            
+
             logger.info(f"🤝 [Together AI] Downloading image from URL...")
             async with httpx.AsyncClient(timeout=30.0) as client:
                 img_response = await client.get(image_url)
-            
+                img_response.raise_for_status()
+
             logger.info(f"✅ [Together AI] Image downloaded successfully ({len(img_response.content)} bytes)")
             return img_response.content
             
@@ -1556,7 +1574,8 @@ async def txt2img(request: Txt2ImgRequest):
                 raise Exception(f"Unknown provider: {provider}")
             
             image_bytes = await client.generate(full_prompt, full_negative, lora_list, params)
-            
+            _validate_image_bytes(image_bytes, provider)
+
             logger.info(f"✅ [Request {request_id}] [Provider] SUCCESS with {provider.upper()}")
 
             total_gen_time = time.time() - gen_start
