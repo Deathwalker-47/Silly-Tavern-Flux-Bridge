@@ -1,7 +1,10 @@
 import base64
+from pathlib import Path
 import sys
 import types
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def install_test_stubs():

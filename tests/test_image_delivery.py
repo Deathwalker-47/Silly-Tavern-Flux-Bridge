@@ -17,9 +17,12 @@ So the bridge must return::
 """
 import base64
 import json
+from pathlib import Path
 import sys
 import types
 import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 # ---------------------------------------------------------------------------
