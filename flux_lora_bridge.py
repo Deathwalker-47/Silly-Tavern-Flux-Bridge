@@ -1417,6 +1417,9 @@ class Txt2ImgRequest(BaseModel):
     tiling: bool = Field(default=False)
     override_settings: dict = Field(default_factory=dict)
     override_settings_restore_afterwards: bool = Field(default=True)
+    # Multi-char metadata from plugin
+    character_prompts: dict = Field(default_factory=dict, description="Map of character name to their SD prompt/trigger words")
+    visible_characters: list = Field(default_factory=list, description="List of character names visible in recent chat")
 
 class Txt2ImgResponse(BaseModel):
     images: list[str] = Field(description="Base64-encoded images")
@@ -1497,7 +1500,24 @@ async def txt2img(request: Txt2ImgRequest):
     logger.info(f"📝 [Input] Raw Prompt ({len(request.prompt.split())} words): {request.prompt[:200]}..." if len(request.prompt) > 200 else f"📝 [Input] Raw Prompt: {request.prompt}")
     logger.info(f"📝 [Input] Negative Prompt: {request.negative_prompt}")
     logger.info(f"📝 [Input] Parameters: steps={request.steps}, cfg={request.cfg_scale}, size={request.width}x{request.height}, seed={request.seed}")
-    matched_loras = lora_manager.match_loras_by_keywords(request.prompt, request.negative_prompt)
+    if request.visible_characters:
+        logger.info(f"👥 [Input] Visible characters from plugin: {request.visible_characters}")
+    if request.character_prompts:
+        logger.info(f"📎 [Input] Character prompts received for: {list(request.character_prompts.keys())}")
+
+    # Build enriched search text: append visible character names + their SD prompts so
+    # keyword matcher can find LoRAs even when names aren't in the current message body.
+    search_extras = []
+    if request.visible_characters:
+        search_extras.append(" ".join(request.visible_characters))
+    if request.character_prompts:
+        for char_name, sd_prompt in request.character_prompts.items():
+            if sd_prompt:
+                search_extras.append(sd_prompt)
+                logger.info(f"📎 [Input] Injecting SD prompt for {char_name}: {sd_prompt[:80]}")
+    pre_search_prompt = request.prompt + (" " + " ".join(search_extras) if search_extras else "")
+
+    matched_loras = lora_manager.match_loras_by_keywords(pre_search_prompt, request.negative_prompt)
     char_names = [m["id"] for m in matched_loras]  # or pull from lora_data["name"]
     logger.info("")
     logger.info("=" * 100)

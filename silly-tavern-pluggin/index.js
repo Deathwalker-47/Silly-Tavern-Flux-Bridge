@@ -14,7 +14,10 @@
         LLM_MODEL: "deepseek/deepseek-chat",
         MESSAGE_COMPLETE_DELAY: 4000, // 4 seconds after last change
         CHECK_INTERVAL: 1000, // Fallback check every second
-        MIN_MESSAGE_LENGTH: 20
+        MIN_MESSAGE_LENGTH: 20,
+        // When true: send raw narrative to bridge (bridge's DeepSeek handles summarization).
+        // When false: use OpenRouter LLM in plugin first (legacy behaviour).
+        USE_BRIDGE_SUMMARIZATION: true
     };
 
     function loadConfig() {
@@ -362,6 +365,105 @@
             .trim();
     }
 
+    /**
+     * Collect all unique character names visible in recent chat messages.
+     * Also checks SillyTavern group chat membership if available.
+     */
+    function getAllVisibleCharacterNames(context) {
+        const names = new Set();
+
+        for (const msg of context) {
+            if (msg.role === 'character' && msg.name && msg.name !== 'Unknown') {
+                names.add(msg.name);
+            }
+        }
+
+        try {
+            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+                const ctx = SillyTavern.getContext();
+                if (ctx.groups && ctx.selectedGroupId) {
+                    const group = ctx.groups.find(g => g.id === ctx.selectedGroupId);
+                    if (group && group.members) {
+                        for (const memberId of group.members) {
+                            const char = ctx.characters?.find(c => c.avatar === memberId);
+                            if (char?.name) names.add(char.name);
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
+
+        return Array.from(names);
+    }
+
+    /**
+     * Fetch SD prompt / trigger words for each named character from ST character data.
+     * Returns an object: { "Nimya": "nimya33 south indian woman...", ... }
+     */
+    function getAllCharacterPrompts(characterNames) {
+        const prompts = {};
+
+        try {
+            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+                const ctx = SillyTavern.getContext();
+                if (ctx.characters) {
+                    for (const char of ctx.characters) {
+                        if (characterNames.includes(char.name)) {
+                            const sdPrompt =
+                                char.data?.extensions?.sd_character_prompt ||
+                                char.data?.extensions?.sd_api_prompt ||
+                                char.extensions?.sd_character_prompt ||
+                                char.extensions?.sd_api_prompt ||
+                                null;
+                            if (sdPrompt && sdPrompt.trim()) {
+                                prompts[char.name] = sdPrompt.trim();
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_) {}
+
+        return prompts;
+    }
+
+    /**
+     * Build a raw narrative payload for the bridge.
+     * Includes character SD prompts (trigger words), all visible character names,
+     * the current message, and a short window of recent context.
+     * The bridge's DeepSeek summarizer will process this — no LLM call here.
+     */
+    function buildRawPromptPayload(currentMessage, context, activeCharPrefix, allCharNames) {
+        const parts = [];
+
+        // Character SD prompt (trigger words) for the active character
+        if (activeCharPrefix) {
+            parts.push(activeCharPrefix);
+        }
+
+        // Explicit character list so bridge keyword matcher can find all LoRAs
+        if (allCharNames.length > 0) {
+            parts.push(`Characters present: ${allCharNames.join(', ')}`);
+        }
+
+        // Current AI message — this is the scene we're illustrating
+        parts.push(currentMessage.text);
+
+        // Add 2 preceding messages for scene continuity (capped to avoid flooding)
+        const recentContext = context.slice(-3, -1);
+        if (recentContext.length > 0) {
+            const contextText = recentContext
+                .map(m => m.content)
+                .join(' ')
+                .substring(0, 500);
+            if (contextText.trim()) {
+                parts.push(`Recent context: ${contextText}`);
+            }
+        }
+
+        return parts.join('\n\n');
+    }
+
     // ============================================
     // LLM VISUAL PROMPT GENERATION
     // ============================================
@@ -448,7 +550,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
     // IMAGE GENERATION & DISPLAY
     // ============================================
 
-    async function generateImage(prompt) {
+    async function generateImage(prompt, metadata = {}) {
         const bridgeUrl = resolveBridgeUrl();
         console.log('[AutoImageGen] 🎨 Sending to bridge...');
         console.log(`[AutoImageGen] 📝 Prompt: ${prompt.substring(0, 100)}...`);
@@ -469,7 +571,10 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
                     cfg_scale: 3.5,
                     width: 1024,
                     height: 1024,
-                    seed: -1
+                    seed: -1,
+                    // Multi-char metadata — bridge uses these for LoRA pre-matching
+                    character_prompts: metadata.characterPrompts || {},
+                    visible_characters: metadata.visibleCharacters || []
                 })
             });
 
@@ -545,15 +650,34 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
             const activeCharacterName = getActiveCharacterName();
             console.log(`[AutoImageGen] 👤 Active character: ${activeCharacterName}`);
 
-            const characterPrefix = getCharacterImagePrompt(activeCharacterName);
-            console.log(`[AutoImageGen] 🎨 Character prefix: ${characterPrefix.substring(0, 80)}...`);
+            if (CONFIG.USE_BRIDGE_SUMMARIZATION) {
+                // ── New path: send raw narrative to bridge, let DeepSeek summarize ──
+                const context = getChatContext(10);
+                const visibleCharacters = getAllVisibleCharacterNames(context);
+                const characterPrompts = getAllCharacterPrompts(visibleCharacters);
+                const activeCharPrefix = getCharacterImagePrompt(activeCharacterName);
 
-            const context = getChatContext(5);
-            const visualPrompt = await generateVisualPrompt(context, characterPrefix);
-            const base64Image = await generateImage(visualPrompt);
+                console.log(`[AutoImageGen] 👥 Visible characters: ${visibleCharacters.join(', ')}`);
+                console.log(`[AutoImageGen] 📎 Character prompts found: ${Object.keys(characterPrompts).join(', ')}`);
 
-            if (base64Image) {
-                displayImage(base64Image, message.element);
+                const rawPrompt = buildRawPromptPayload(message, context, activeCharPrefix, visibleCharacters);
+                const base64Image = await generateImage(rawPrompt, { characterPrompts, visibleCharacters });
+
+                if (base64Image) {
+                    displayImage(base64Image, message.element);
+                }
+            } else {
+                // ── Legacy path: OpenRouter summarization in plugin ──
+                const characterPrefix = getCharacterImagePrompt(activeCharacterName);
+                console.log(`[AutoImageGen] 🎨 Character prefix: ${characterPrefix.substring(0, 80)}...`);
+
+                const context = getChatContext(5);
+                const visualPrompt = await generateVisualPrompt(context, characterPrefix);
+                const base64Image = await generateImage(visualPrompt);
+
+                if (base64Image) {
+                    displayImage(base64Image, message.element);
+                }
             }
 
         } catch (e) {
@@ -575,6 +699,7 @@ Example: "smiling warmly, playful expression, standing in kitchen, wearing casua
         console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
         console.log(`[AutoImageGen] 🌉 Bridge: ${resolveBridgeUrl()}`);
         console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
+        console.log(`[AutoImageGen] 🧠 Bridge summarization: ${CONFIG.USE_BRIDGE_SUMMARIZATION ? 'enabled (raw text → DeepSeek)' : 'disabled (OpenRouter in plugin)'}`);
     }
 
     // Wait for page load
