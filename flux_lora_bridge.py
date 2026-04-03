@@ -1655,19 +1655,26 @@ class MultiCharPipeline:
             )
             inpaint_prompt = self._build_character_inpaint_prompt(char_data, slot)
 
-            current_image = await self._generate_pass(
-                prompt=inpaint_prompt,
-                loras=inpaint_lora_list,
-                params={
-                    **mc_params,
-                    "strength": strength_by_z.get(slot["z"], 0.90),
-                    "steps": steps_by_z.get(slot["z"], 22),
-                    "seed_image": base64.b64encode(current_image).decode(),
-                    "mask_image": base64.b64encode(mask_bytes).decode(),
-                },
-                pass_name=f"Pass{pass_num}-{char_data['name']}",
-                negative_prompt=negative_prompt,
-            )
+            try:
+                current_image = await self._generate_pass(
+                    prompt=inpaint_prompt,
+                    loras=inpaint_lora_list,
+                    params={
+                        **mc_params,
+                        "strength": strength_by_z.get(slot["z"], 0.90),
+                        "steps": steps_by_z.get(slot["z"], 22),
+                        "seed_image": base64.b64encode(current_image).decode(),
+                        "mask_image": base64.b64encode(mask_bytes).decode(),
+                    },
+                    pass_name=f"Pass{pass_num}-{char_data['name']}",
+                    negative_prompt=negative_prompt,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"🎭 [MultiChar {request_id}] Pass {pass_num} ({char_data['name']}) failed: {e}. "
+                    "Returning partial result with remaining characters skipped."
+                )
+                break  # Return best image produced so far
 
         # Step 5: Optional harmonization
         do_harmonize = (
