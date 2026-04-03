@@ -222,7 +222,7 @@ from pydantic import BaseModel, Field
 
 import uvicorn
 import httpx
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 from io import BytesIO
 from fastapi import Request
 from fastapi import APIRouter
@@ -242,13 +242,6 @@ app.add_middleware(
 
 YOU_COM_AGENT_RUNS = "https://api.you.com/v1/agents/runs"
 DEBUG_STREAM_TAP = os.getenv("DEBUG_STREAM_TAP", "false").lower() == "true"
-
-try:
-    from gradio_client import Client as GradioClient
-    GRADIO_AVAILABLE = True
-except ImportError:
-    GRADIO_AVAILABLE = False
-    logging.warning("gradio_client not installed - HF ZeroGPU will not work")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -281,20 +274,14 @@ class Config:
     }
     
     # LoRA limits per provider
-    MAXLORAS_PIXELDOJO = 1
     MAXLORAS_WAVESPEED = 4
     MAXLORAS_DEFAULT = 15
     MAXLORAS_RUNWARE = 12
     MAXLORAS_FAL = int(os.getenv("MAXLORAS_FAL", 3))
     MAXLORAS_TOGETHER = int(os.getenv("MAXLORAS_TOGETHER", 2))
-    MAXLORAS_HF = int(os.getenv("MAXLORAS_HF", 10))
 
     # File paths
     LORA_DICT_PATH = os.getenv("LORA_DICT_PATH", "master_lora_dict.json")
-    
-    # HuggingFace Space (Fallback via Gradio)
-    HF_SPACE_NAME = os.getenv("HF_SPACE_NAME", "")
-    HF_TOKEN = os.getenv("HF_TOKEN", "")
 
     # Runware (Primary)
     RUNWARE_API_KEY = os.getenv("RUNWARE_API_KEY", "")
@@ -308,10 +295,6 @@ class Config:
     ATLASCLOUD_API_KEY = os.getenv("ATLASCLOUD_API_KEY", "")
     ATLASCLOUD_ENDPOINT = "https://api.atlascloud.ai/v1/text2image"
     
-    # Pixel Dojo (SECONDARY)
-    PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "")
-    PIXELDOJO_ENDPOINT = "https://pixeldojo.ai/api/v1/flux"
-    
     # Wavespeed (TERTIARY)
     WAVESPEED_API_KEY = os.getenv("WAVESPEED_API_KEY", "")
     WAVESPEED_ENDPOINT = "https://api.wavespeed.ai/api/v3/wavespeed-ai/flux-dev-lora"
@@ -324,7 +307,22 @@ class Config:
     DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V3"
     ENABLE_SUMMARIZATION = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
     SUMMARY_MAX_LENGTH = int(os.getenv("SUMMARY_MAX_LENGTH", 300))
-    
+
+    # Multi-character inpainting pipeline
+    MULTI_CHAR_ENABLED = os.getenv("MULTI_CHAR_ENABLED", "true").lower() == "true"
+    MULTI_CHAR_MAX = int(os.getenv("MULTI_CHAR_MAX", 5))
+    MULTI_CHAR_2CHAR_SKIP_BG = os.getenv("MULTI_CHAR_2CHAR_SKIP_BG", "true").lower() == "true"
+    MULTI_CHAR_FEATHER_PX = int(os.getenv("MULTI_CHAR_FEATHER_PX", 40))
+    MULTI_CHAR_HARMONIZE_ENABLED = os.getenv("MULTI_CHAR_HARMONIZE_ENABLED", "true").lower() == "true"
+    MULTI_CHAR_HARMONIZE_3PLUS = os.getenv("MULTI_CHAR_HARMONIZE_3PLUS", "false").lower() == "true"
+    MULTI_CHAR_HARMONIZE_STRENGTH = float(os.getenv("MULTI_CHAR_HARMONIZE_STRENGTH", 0.30))
+    MULTI_CHAR_BG_STEPS = int(os.getenv("MULTI_CHAR_BG_STEPS", 25))
+    MULTI_CHAR_FG_STRENGTH = float(os.getenv("MULTI_CHAR_FG_STRENGTH", 0.92))
+    MULTI_CHAR_MG_STRENGTH = float(os.getenv("MULTI_CHAR_MG_STRENGTH", 0.88))
+    MULTI_CHAR_BG_STRENGTH = float(os.getenv("MULTI_CHAR_BG_STRENGTH", 0.85))
+    MULTI_CHAR_CANVAS_W = int(os.getenv("MULTI_CHAR_CANVAS_W", 1536))
+    MULTI_CHAR_CANVAS_H = int(os.getenv("MULTI_CHAR_CANVAS_H", 1024))
+
     @classmethod
     def print_config(cls):
         logger.info("=" * 100)
@@ -332,7 +330,7 @@ class Config:
         logger.info("=" * 100)
         logger.info(f"Port: {cls.PORT}")
         logger.info(f"LoRA Dictionary: {cls.LORA_DICT_PATH}")
-        logger.info(f"Max LoRAs - Pixel Dojo: {cls.MAXLORAS_PIXELDOJO}, Wavespeed: {cls.MAXLORAS_WAVESPEED}, HF ZeroGPU: {cls.MAXLORAS_HF}")
+        logger.info(f"Max LoRAs - Wavespeed: {cls.MAXLORAS_WAVESPEED}, Runware: {cls.MAXLORAS_RUNWARE}, FAL: {cls.MAXLORAS_FAL}, Together: {cls.MAXLORAS_TOGETHER}")
         logger.info("")
         logger.info("LLM SUMMARIZATION - DeepSeek V3 via Together AI")
         logger.info(f"  Enabled: {cls.ENABLE_SUMMARIZATION}")
@@ -347,6 +345,55 @@ class Config:
         logger.info(f"  ✅ HF ZeroGPU (FALLBACK) - CONFIGURED")
         logger.info(f"  ✅ DeepSeek V3 (ACTIVE) - CONFIGURED via Together AI")
         logger.info("=" * 100)
+
+# ============================================
+# MULTI-CHARACTER LAYOUT TEMPLATES
+# ============================================
+# Each slot: x/y/w/h are fractions of canvas (0-1). x,y = center of slot.
+LAYOUT_TEMPLATES: Dict[int, Dict] = {
+    2: {
+        "name": "side_by_side",
+        "canvas": (1536, 1024),
+        "slots": [
+            {"position": "left",  "x": 0.28, "y": 0.50, "w": 0.48, "h": 0.90, "z": "foreground", "scale": "full"},
+            {"position": "right", "x": 0.72, "y": 0.50, "w": 0.48, "h": 0.90, "z": "foreground", "scale": "full"},
+        ],
+        "description": "two people standing side by side, one on the left and one on the right",
+    },
+    3: {
+        "name": "triangle",
+        "canvas": (1536, 1024),
+        "slots": [
+            {"position": "left",        "x": 0.22, "y": 0.55, "w": 0.38, "h": 0.85, "z": "foreground", "scale": "full"},
+            {"position": "right",       "x": 0.78, "y": 0.55, "w": 0.38, "h": 0.85, "z": "foreground", "scale": "full"},
+            {"position": "back-center", "x": 0.50, "y": 0.35, "w": 0.34, "h": 0.55, "z": "background", "scale": "upper"},
+        ],
+        "description": "two people in the foreground left and right, one person visible between them further back",
+    },
+    4: {
+        "name": "staggered_rows",
+        "canvas": (1536, 1024),
+        "slots": [
+            {"position": "front-left",  "x": 0.25, "y": 0.58, "w": 0.38, "h": 0.80, "z": "foreground", "scale": "full"},
+            {"position": "front-right", "x": 0.75, "y": 0.58, "w": 0.38, "h": 0.80, "z": "foreground", "scale": "full"},
+            {"position": "back-left",   "x": 0.38, "y": 0.32, "w": 0.32, "h": 0.50, "z": "background", "scale": "upper"},
+            {"position": "back-right",  "x": 0.62, "y": 0.32, "w": 0.32, "h": 0.50, "z": "background", "scale": "upper"},
+        ],
+        "description": "two people in the foreground, two more people visible behind them between the gaps",
+    },
+    5: {
+        "name": "three_two_rows",
+        "canvas": (1536, 1024),
+        "slots": [
+            {"position": "front-left",   "x": 0.20, "y": 0.60, "w": 0.32, "h": 0.75, "z": "foreground", "scale": "full"},
+            {"position": "front-center", "x": 0.50, "y": 0.60, "w": 0.32, "h": 0.75, "z": "foreground", "scale": "full"},
+            {"position": "front-right",  "x": 0.80, "y": 0.60, "w": 0.32, "h": 0.75, "z": "foreground", "scale": "full"},
+            {"position": "back-left",    "x": 0.35, "y": 0.30, "w": 0.28, "h": 0.48, "z": "background", "scale": "upper"},
+            {"position": "back-right",   "x": 0.65, "y": 0.30, "w": 0.28, "h": 0.48, "z": "background", "scale": "upper"},
+        ],
+        "description": "three people across the foreground, two more visible in the gaps behind them",
+    },
+}
 
 # ============================================
 # DEEPSEEK V3 SUMMARIZER (MULTI-CHAR + EXPLICIT NSFW)
@@ -453,7 +500,7 @@ class ProviderState:
     """Manages provider selection - tries all in order"""
     
     def __init__(self):
-        self.providers = ["runware", "hfzerogpu", "wavespeed", "fal", "together", "pixeldojo"]
+        self.providers = ["runware", "wavespeed", "fal", "together"]
         logger.info(f"📊 [Provider] Order: {', '.join(self.providers)}")
     
     def get_provider_list(self) -> List[str]:
@@ -465,12 +512,6 @@ class ProviderState:
         if provider == "runware":
             logger.info(f"📊 [LoRA Limit] Runware max: {Config.MAXLORAS_RUNWARE}")
             return Config.MAXLORAS_RUNWARE
-        if provider == "hfzerogpu":
-            logger.info(f"📊 [LoRA Limit] HF ZeroGPU max: {Config.MAXLORAS_HF}")
-            return Config.MAXLORAS_HF
-        elif provider == "pixeldojo":
-            logger.info(f"📊 [LoRA Limit] Pixel Dojo max: {Config.MAXLORAS_PIXELDOJO}")
-            return Config.MAXLORAS_PIXELDOJO
         elif provider == "wavespeed":
             logger.info(f"📊 [LoRA Limit] Wavespeed max: {Config.MAXLORAS_WAVESPEED}")
             return Config.MAXLORAS_WAVESPEED
@@ -811,7 +852,7 @@ class RunwareClient(ProviderClient):
         
         # Build Runware task payload
         task_uuid = str(uuid.uuid4())
-        payload = [{
+        task: Dict = {
             "taskType": "imageInference",
             "taskUUID": task_uuid,
             "positivePrompt": prompt,
@@ -823,8 +864,20 @@ class RunwareClient(ProviderClient):
             "width": params.get("width", 1024),
             "numberResults": 1,
             "outputFormat": "jpg",
-            "lora": loras_payload
-        }]
+            "lora": loras_payload,
+        }
+
+        # Inpainting fields — only added when the caller provides them
+        seed_image = params.get("seed_image")
+        mask_image = params.get("mask_image")
+        strength = params.get("strength")
+        if seed_image and mask_image:
+            task["seedImage"] = seed_image
+            task["maskImage"] = mask_image
+            task["strength"] = strength if strength is not None else 0.90
+            logger.info(f"🌐 [Runware] Inpainting mode: strength={task['strength']}")
+
+        payload = [task]
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -848,98 +901,6 @@ class RunwareClient(ProviderClient):
             logger.error(f"🌐 [Runware] ❌ FAILED: {e}")
             raise
 
-# ============================================
-# PIXEL DOJO CLIENT (SECONDARY)
-# ============================================
-class PixelDojoClient(ProviderClient):
-    """Pixel Dojo API client - 1 credit per image, single LoRA via flux-dev-single-lora"""
-
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.endpoint = Config.PIXELDOJO_ENDPOINT
-        logger.info(f"🎨 [Pixel Dojo] Client initialized - Endpoint: {self.endpoint}")
-        logger.info(f"🎨 [Pixel Dojo] API Key configured: {bool(api_key)}")
-
-    @staticmethod
-    def _dimensions_to_aspect_ratio(width: int, height: int) -> str:
-        """Map width x height to closest supported aspect ratio."""
-        ratio = width / height
-        # Supported: 1:1, 16:9, 9:16, 4:3, 3:4, 3:2, 2:3
-        options = [
-            (1.0, "1:1"),
-            (16 / 9, "16:9"),
-            (9 / 16, "9:16"),
-            (4 / 3, "4:3"),
-            (3 / 4, "3:4"),
-            (3 / 2, "3:2"),
-            (2 / 3, "2:3"),
-        ]
-        return min(options, key=lambda o: abs(o[0] - ratio))[1]
-
-    async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
-        """Generate image via Pixel Dojo Flux API"""
-        if not self.api_key:
-            logger.error("❌ [Pixel Dojo] PIXELDOJO_API_KEY not configured")
-            raise ValueError("PIXELDOJO_API_KEY not configured")
-
-        width = params.get("width", 1024)
-        height = params.get("height", 1024)
-        aspect_ratio = self._dimensions_to_aspect_ratio(width, height)
-
-        logger.info(f"🎨 [Pixel Dojo] ===== GENERATION REQUEST =====")
-        logger.info(f"🎨 [Pixel Dojo] Generating with {len(loras)} LoRAs")
-        logger.info(f"🎨 [Pixel Dojo] Prompt ({len(prompt.split())} words): {prompt}")
-        logger.info(f"🎨 [Pixel Dojo] Parameters: aspect_ratio={aspect_ratio} (from {width}x{height}), seed={params.get('seed')}")
-
-        payload = {
-            "prompt": prompt,
-            "model": "flux-dev-single-lora",
-            "aspect_ratio": aspect_ratio,
-            "num_outputs": 1,
-            "output_format": "png",
-            "output_quality": 100,
-        }
-
-        seed = params.get("seed", -1)
-        if seed and seed > 0:
-            payload["seed"] = seed
-
-        # Pixel Dojo supports a single LoRA for flux-dev-single-lora
-        if loras:
-            lora = loras[0]
-            payload["lora_weights"] = lora.get("url", "")
-            payload["lora_scale"] = lora.get("weight", 0.7)
-            logger.info(f"🎨 [Pixel Dojo] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Scale: {lora.get('weight')}")
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        try:
-            logger.info(f"🎨 [Pixel Dojo] Sending request to {self.endpoint}...")
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(self.endpoint, json=payload, headers=headers)
-            if response.status_code != 200:
-                error_detail = ""
-                try:
-                    err = response.json()
-                    if "error" in err and "message" in err["error"]:
-                        error_detail = f": {err['error']['message']}"
-                except Exception:
-                    error_detail = f": {response.text[:200]}"
-                logger.error(f"🎨 [Pixel Dojo] API Error {response.status_code}{error_detail}")
-                raise Exception(f"Pixel Dojo API error: {response.status_code}{error_detail}")
-
-            result = response.json()
-            logger.info(f"🎨 [Pixel Dojo] Response keys: {list(result.keys())}")
-
-            # Response format: {"images": [url_or_dict, ...]}
-            image_bytes = await _resolve_image_bytes_from_payload(result, "Pixel Dojo")
-            logger.info(f"✅ [Pixel Dojo] Image resolved ({len(image_bytes)} bytes)")
-            return image_bytes
-        except Exception as e:
-            logger.error(f"🎨 [Pixel Dojo] ❌ FAILED: {e}")
-            raise
 # ============================================================================
 # WAVESPEED CLIENT
 # ============================================================================
@@ -1273,110 +1234,466 @@ class TogetherAIClient(ProviderClient):
             raise
 
 
-# ============================================================================
-# HF ZEROGPU CLIENT (GRADIO)
-# ============================================================================
 
-class HFZeroGPUClient(ProviderClient):
-    """HuggingFace Gradio-backed ZeroGPU client"""
 
-    def __init__(self, space: Optional[str] = None, token: Optional[str] = None):
-        self.client = None
-        if not GRADIO_AVAILABLE or not space:
-            logger.info("⚠️ [HF ZeroGPU] Gradio not available or HF space not provided, skipping init")
-            return
+# ============================================
+# MASK GENERATOR
+# ============================================
+class MaskGenerator:
+    """Generate rectangular inpainting masks from layout slot definitions."""
 
-        try:
-            self.client = GradioClient(space, token=token)
-            logger.info(f"✅ [HF ZeroGPU] Connected to HF Space: {space}")
-        except Exception as e:
-            logger.error(f"❌ [HF ZeroGPU] Failed to connect to HF Space {space}: {e}")
-            self.client = None
+    @staticmethod
+    def generate_slot_mask(
+        canvas_width: int,
+        canvas_height: int,
+        slot: Dict,
+        feather_px: int = 40,
+        padding_pct: float = 0.05,
+    ) -> bytes:
+        """White-on-black mask for one character slot. All slot coords are fractions."""
+        mask = Image.new("L", (canvas_width, canvas_height), 0)
+        draw = ImageDraw.Draw(mask)
 
-        self.space = space
-        self.token = token
+        cx = slot["x"] * canvas_width
+        cy = slot["y"] * canvas_height
+        half_w = (slot["w"] * canvas_width) / 2
+        half_h = (slot["h"] * canvas_height) / 2
+        pad_w = canvas_width * padding_pct
+        pad_h = canvas_height * padding_pct
 
-    async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
-        if not self.client:
-            logger.error("❌ [HF ZeroGPU] Gradio client not initialized")
-            raise ValueError("Gradio client not available")
+        x0 = max(0, int(cx - half_w - pad_w))
+        y0 = max(0, int(cy - half_h - pad_h))
+        x1 = min(canvas_width, int(cx + half_w + pad_w))
+        y1 = min(canvas_height, int(cy + half_h + pad_h))
 
-        logger.info(f"🤗 [HF ZeroGPU] GENERATION REQUEST")
-        logger.info(f"🤗 [HF ZeroGPU] Generating with {len(loras)} LoRAs (capped at {Config.MAXLORAS_HF})")
-        logger.info(f"🤗 [HF ZeroGPU] Prompt: {len(prompt.split())} words: {prompt}")
-        logger.info(f"🤗 [HF ZeroGPU] Negative prompt: {negative_prompt}")
-        logger.info(f"🤗 [HF ZeroGPU] Parameters: steps={params.get('steps')}, cfg={params.get('cfg_scale')}, size={params.get('width')}x{params.get('height')}")
+        draw.rectangle((x0, y0, x1, y1), fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=feather_px))
 
-        # Build LoRA JSON list for the HF Space API (lora_strings_json param)
-        loras_payload = []
-        for lora in loras:
-            loras_payload.append({
-                "id": lora.get("id"),
-                "url": lora.get("url"),
-                "weight": lora.get("weight")
+        buf = BytesIO()
+        mask.save(buf, format="PNG")
+        return buf.getvalue()
+
+    @staticmethod
+    def generate_seam_mask(
+        canvas_width: int,
+        canvas_height: int,
+        slots: List[Dict],
+        seam_width_px: int = 100,
+    ) -> bytes:
+        """Mask covering the vertical seam zones between adjacent slots, for harmonization."""
+        mask = Image.new("L", (canvas_width, canvas_height), 0)
+        draw = ImageDraw.Draw(mask)
+
+        x_centers = sorted([s["x"] * canvas_width for s in slots])
+        for i in range(len(x_centers) - 1):
+            mid_x = (x_centers[i] + x_centers[i + 1]) / 2
+            x0 = max(0, int(mid_x - seam_width_px / 2))
+            x1 = min(canvas_width, int(mid_x + seam_width_px / 2))
+            draw.rectangle((x0, 0, x1, canvas_height), fill=255)
+
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=30))
+        buf = BytesIO()
+        mask.save(buf, format="PNG")
+        return buf.getvalue()
+
+
+# ============================================
+# DECOMPOSE SYSTEM PROMPT (multi-char layout)
+# ============================================
+_DECOMPOSE_SYSTEM_PROMPT = """You are a scene layout planner for AI image generation with multiple characters.
+
+INPUT: A narrative scene + a list of characters with their trigger words + a layout template with slot positions.
+
+OUTPUT: A JSON object with this exact structure:
+{
+  "scene": "environment description with NO character details. lighting, setting, mood, time of day, weather. Include: 'group scene with multiple people visible at various depths'",
+  "characters": [
+    {
+      "name": "character_keyword",
+      "trigger": "exact_trigger_word",
+      "slot": "slot_position_name",
+      "description": "FULL visual prompt for this character. MUST start with trigger word. Include: appearance, clothing, pose, action, expression. Include spatial anchor matching their slot (e.g., 'standing on the left in the foreground', 'visible in the background between the others').",
+      "scale_hint": "full_body / upper_body / waist_up"
+    }
+  ],
+  "camera": "wide shot framing, angle, depth of field"
+}
+
+ASSIGNMENT RULES:
+- The MOST IMPORTANT / PROTAGONIST character gets a foreground slot
+- Supporting characters go to background slots
+- If the narrative implies specific spatial relationships respect those over default slot assignment
+- Characters in background slots should have "scale_hint": "upper_body" or "waist_up"
+- Characters in foreground slots should have "scale_hint": "full_body" unless the scene is a close-up
+- Each character description MUST start with their trigger word — these are LoRA triggers, changing them breaks the image
+- NEVER merge two characters into one description
+- Include natural spatial phrasing: "in the foreground on the left", "visible further back between them"
+
+SCENE RULES:
+- The scene prompt must describe the environment with PLACEHOLDER PEOPLE: "a room where several silhouetted figures are present"
+- Do NOT describe any specific character in the scene prompt
+- Include lighting direction, atmosphere, and enough environmental detail for the model to compose a coherent background
+- The scene prompt should hint at depth: "wide angle showing depth" or "layered composition with foreground and background space"
+
+Output ONLY valid JSON. No markdown fences. No explanation."""
+
+
+# ============================================
+# MULTI-CHARACTER INPAINTING PIPELINE
+# ============================================
+class MultiCharPipeline:
+    """Background-first sequential inpainting for 2-5 characters.
+
+    Flow for 3+ chars: Pass 0 (background, no char LoRAs) → inpaint each char
+    back-to-front → optional harmonization.
+    Flow for 2 chars (skip_bg=True): Pass 1 (Char A + scene) → inpaint Char B.
+    """
+
+    def __init__(self, runware_client: "RunwareClient", summarizer: "DeepSeekSummarizer"):
+        self.runware = runware_client
+        self.summarizer = summarizer
+
+    # ── Internal helpers ──────────────────────────────────────────────────
+
+    async def _call_deepseek(self, system_prompt: str, user_message: str, max_tokens: int = 800) -> str:
+        """Thin wrapper around Together AI / DeepSeek for decomposition calls."""
+        if not Config.TOGETHER_API_KEY:
+            raise ValueError("TOGETHER_API_KEY not configured — cannot decompose scene")
+
+        payload = {
+            "model": Config.DEEPSEEK_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "top_p": 0.85,
+        }
+        headers = {
+            "Authorization": f"Bearer {Config.TOGETHER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.together.xyz/v1/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            raise ValueError(f"DeepSeek decompose API error {resp.status_code}: {resp.text[:200]}")
+        return resp.json()["choices"][0]["message"]["content"].strip()
+
+    async def _generate_pass(
+        self,
+        prompt: str,
+        loras: List[Dict],
+        params: Dict,
+        pass_name: str,
+        negative_prompt: str = "",
+    ) -> bytes:
+        """Single Runware generation call, with optional inpainting fields from params."""
+        logger.info(f"🎭 [{pass_name}] prompt={prompt[:120]}... loras={[l.get('id','?') for l in loras]}")
+        image_bytes = await self.runware.generate(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            loras=loras,
+            params=params,
+        )
+        _validate_image_bytes(image_bytes, pass_name)
+        logger.info(f"🎭 [{pass_name}] done ({len(image_bytes)} bytes)")
+        return image_bytes
+
+    def _find_lora(self, character: Dict, character_loras: List[Dict]) -> Dict:
+        """Return the matched-LoRA dict for a character by name."""
+        for cl in character_loras:
+            if cl["id"] == character["name"]:
+                return cl
+        # Fallback: first in list
+        return character_loras[0]
+
+    def _build_lora_list_from_matched(self, matched_loras: List[Dict]) -> List[Dict]:
+        """Convert matched LoRA dicts to the flat url/weight/id format providers expect."""
+        return [
+            {
+                "url": m["data"]["url"],
+                "weight": m["data"].get("weight", 1.0),
+                "id": m["id"],
+                "name": m["data"].get("name", m["id"]),
+            }
+            for m in matched_loras
+        ]
+
+    # ── Decomposition ─────────────────────────────────────────────────────
+
+    async def decompose_prompt(
+        self,
+        prompt: str,
+        character_loras: List[Dict],
+        layout: Dict,
+    ) -> Dict:
+        char_info = []
+        for cl in character_loras:
+            data = cl["data"]
+            trigger = (data.get("trigger_words") or data.get("keywords") or [""])[0]
+            char_info.append({
+                "name": cl["id"],
+                "trigger": trigger,
+                "keywords": data.get("keywords", []),
             })
-            logger.info(f"🤗 [HF ZeroGPU] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Weight: {lora.get('weight')}")
 
-        lora_json_str = json.dumps(loras_payload)
+        slot_names = [s["position"] for s in layout["slots"]]
+        user_message = (
+            f"Scene to decompose:\n{prompt}\n\n"
+            f"Characters (in priority order):\n{json.dumps(char_info, indent=2)}\n\n"
+            f"Available layout slots (assign one character per slot):\n{json.dumps(slot_names)}\n\n"
+            "Decompose into scene + per-character descriptions. Output JSON only."
+        )
 
+        raw = await self._call_deepseek(
+            system_prompt=_DECOMPOSE_SYSTEM_PROMPT,
+            user_message=user_message,
+            max_tokens=900,
+        )
+        # Strip markdown fences if DeepSeek adds them despite instruction
+        raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
+        raw = re.sub(r"\n?```$", "", raw.strip())
+        return json.loads(raw)
+
+    def fallback_decomposition(
+        self,
+        prompt: str,
+        character_loras: List[Dict],
+        layout: Dict,
+    ) -> Dict:
+        chars = []
+        for i, cl in enumerate(character_loras):
+            slot = layout["slots"][i % len(layout["slots"])]
+            data = cl["data"]
+            trigger = (data.get("trigger_words") or data.get("keywords") or [""])[0]
+            chars.append({
+                "name": cl["id"],
+                "trigger": trigger,
+                "slot": slot["position"],
+                "description": f"{trigger} a person, {slot['position'].replace('-', ' ')}",
+                "scale_hint": "full_body" if slot["z"] == "foreground" else "upper_body",
+            })
+        return {
+            "scene": prompt,
+            "characters": chars,
+            "camera": "wide shot, photorealistic",
+        }
+
+    # ── Layout helpers ────────────────────────────────────────────────────
+
+    def get_inpainting_order(self, characters: List[Dict], layout: Dict) -> List[Dict]:
+        """Sort characters back-to-front (painter's algorithm)."""
+        z_priority = {"background": 0, "midground": 1, "foreground": 2}
+        slot_map = {s["position"]: s for s in layout["slots"]}
+        result = []
+        for char in characters:
+            slot = slot_map.get(char.get("slot", ""), layout["slots"][0])
+            result.append({**char, "_slot": slot, "_z_priority": z_priority.get(slot["z"], 1)})
+        return sorted(result, key=lambda c: c["_z_priority"])
+
+    # ── Prompt builders ───────────────────────────────────────────────────
+
+    def build_background_prompt(self, scene_data: Dict, layout: Dict) -> str:
+        scene = scene_data.get("scene", "")
+        camera = scene_data.get("camera", "wide shot, photorealistic")
+        char_count = len(scene_data.get("characters", []))
+        placeholder_hints = {
+            2: "scene with open space for two people, one on each side",
+            3: "scene with space for three people, two in front and one behind",
+            4: "group scene with space for four people at varying depths",
+            5: "group scene with space for five people in two rows",
+        }
+        placeholder = placeholder_hints.get(char_count, f"group scene with {char_count} people")
+        return f"{scene}. {placeholder}. {camera}. photorealistic, detailed environment"
+
+    def _build_char_a_scene_prompt(self, char_a: Dict, scene_data: Dict) -> str:
+        scene = scene_data.get("scene", "")
+        camera = scene_data.get("camera", "wide shot, photorealistic")
+        char_desc = char_a.get("description", char_a.get("trigger", char_a["name"]))
+        return f"{char_desc}, {scene}, {camera}, photorealistic, detailed"
+
+    def _build_character_inpaint_prompt(self, character: Dict, slot: Dict) -> str:
+        trigger = character.get("trigger", character["name"])
+        desc = character.get("description", trigger)
+        scale = character.get("scale_hint", "full_body")
+        scale_phrases = {
+            "full_body": "full body visible",
+            "upper_body": "upper body visible, waist up",
+            "waist_up": "waist up, partial figure",
+        }
+        scale_phrase = scale_phrases.get(scale, "")
+        if not desc.lower().startswith(trigger.lower()):
+            desc = f"{trigger} {desc}"
+        return f"{desc}, {scale_phrase}, photorealistic, detailed"
+
+    # ── Harmonization ─────────────────────────────────────────────────────
+
+    async def harmonize(
+        self,
+        current_image: bytes,
+        scene_data: Dict,
+        layout: Dict,
+        shared_loras: List[Dict],
+        mc_params: Dict,
+        negative_prompt: str = "",
+    ) -> bytes:
+        seam_mask = MaskGenerator.generate_seam_mask(
+            mc_params["width"], mc_params["height"],
+            layout["slots"],
+            seam_width_px=120,
+        )
+        harmonize_prompt = (
+            f"{scene_data.get('scene', '')}. {scene_data.get('camera', '')}. "
+            "consistent lighting, unified color palette, photorealistic, detailed"
+        )
+        lora_list = self._build_lora_list_from_matched(shared_loras)
+        return await self._generate_pass(
+            prompt=harmonize_prompt,
+            loras=lora_list,
+            params={
+                **mc_params,
+                "strength": Config.MULTI_CHAR_HARMONIZE_STRENGTH,
+                "steps": 15,
+                "seed_image": base64.b64encode(current_image).decode(),
+                "mask_image": base64.b64encode(seam_mask).decode(),
+            },
+            pass_name="Harmonize",
+            negative_prompt=negative_prompt,
+        )
+
+    # ── Main orchestration ────────────────────────────────────────────────
+
+    async def generate(
+        self,
+        original_prompt: str,
+        summarized_prompt: str,
+        character_loras: List[Dict],
+        shared_loras: List[Dict],
+        params: Dict,
+        request_id: str,
+        negative_prompt: str = "",
+    ) -> bytes:
+        char_count = len(character_loras)
+        layout = LAYOUT_TEMPLATES[min(char_count, 5)]
+        canvas_w, canvas_h = layout["canvas"]
+
+        logger.info(f"🎭 [MultiChar {request_id}] {char_count} chars, layout={layout['name']}, canvas={canvas_w}x{canvas_h}")
+
+        mc_params = {**params, "width": canvas_w, "height": canvas_h}
+
+        # Step 1: Decompose prompt into scene + per-character descriptions
         try:
-            logger.info(f"🤗 [HF ZeroGPU] Calling Gradio predict in thread pool...")
+            scene_data = await self.decompose_prompt(summarized_prompt, character_loras, layout)
+            logger.info(f"🎭 [MultiChar {request_id}] Decomposed: {len(scene_data.get('characters', []))} chars assigned")
+        except Exception as e:
+            logger.warning(f"🎭 [MultiChar {request_id}] Decomposition failed ({e}), using fallback")
+            scene_data = self.fallback_decomposition(summarized_prompt, character_loras, layout)
 
-            # HF Space API: /run_lora expects these exact parameter names
-            result = await asyncio.to_thread(
-                self.client.predict,
-                prompt=prompt,
-                image_url="",
-                lora_strings_json=lora_json_str,
-                cfg_scale=params.get('cfg_scale', 3.5),
-                steps=params.get('steps', 28),
-                randomize_seed=params.get('seed', -1) == -1,
-                seed=params.get('seed', -1) if params.get('seed', -1) != -1 else 0,
-                width=params.get('width', 1024),
-                height=params.get('height', 1024),
-                upload_to_r2=False,
-                account_id="",
-                access_key="",
-                secret_key="",
-                bucket="",
-                api_name="/run_lora"
+        # Step 2: Sort back-to-front
+        ordered_chars = self.get_inpainting_order(scene_data.get("characters", []), layout)
+
+        shared_lora_list = self._build_lora_list_from_matched(shared_loras)
+
+        # Step 3: Background or Char-A-first
+        if char_count == 2 and Config.MULTI_CHAR_2CHAR_SKIP_BG:
+            char_a = ordered_chars[0]
+            char_a_lora_matched = self._find_lora(char_a, character_loras)
+            char_a_lora_list = self._build_lora_list_from_matched([char_a_lora_matched]) + shared_lora_list
+            pass1_prompt = self._build_char_a_scene_prompt(char_a, scene_data)
+            current_image = await self._generate_pass(
+                prompt=pass1_prompt,
+                loras=char_a_lora_list,
+                params=mc_params,
+                pass_name=f"Pass1-{char_a['name']}",
+                negative_prompt=negative_prompt,
+            )
+            remaining_chars = ordered_chars[1:]
+            logger.info(f"🎭 [MultiChar {request_id}] 2-char mode: Pass1 done with {char_a['name']}")
+        else:
+            bg_prompt = self.build_background_prompt(scene_data, layout)
+            current_image = await self._generate_pass(
+                prompt=bg_prompt,
+                loras=shared_lora_list,
+                params={**mc_params, "steps": Config.MULTI_CHAR_BG_STEPS},
+                pass_name="Pass0-Background",
+                negative_prompt=negative_prompt,
+            )
+            remaining_chars = ordered_chars
+            logger.info(f"🎭 [MultiChar {request_id}] Background pass done")
+
+        # Step 4: Sequential character inpainting (back → front)
+        strength_by_z = {
+            "background": Config.MULTI_CHAR_BG_STRENGTH,
+            "midground":  Config.MULTI_CHAR_MG_STRENGTH,
+            "foreground": Config.MULTI_CHAR_FG_STRENGTH,
+        }
+        steps_by_z = {"background": 20, "midground": 22, "foreground": 25}
+
+        for idx, char_data in enumerate(remaining_chars, 1):
+            char_lora_matched = self._find_lora(char_data, character_loras)
+            slot = char_data["_slot"]
+            pass_num = idx + (0 if char_count != 2 or not Config.MULTI_CHAR_2CHAR_SKIP_BG else 1)
+
+            logger.info(
+                f"🎭 [MultiChar {request_id}] Pass {pass_num}: "
+                f"Inpainting {char_data['name']} at {slot['position']} (z={slot['z']})"
             )
 
-            logger.info(f"🤗 [HF ZeroGPU] Gradio response received, type: {type(result)}")
+            mask_bytes = MaskGenerator.generate_slot_mask(
+                canvas_w, canvas_h,
+                slot,
+                feather_px=Config.MULTI_CHAR_FEATHER_PX,
+            )
 
-            # Result is a tuple: (generated_image_dict, result_json_str)
-            if isinstance(result, (tuple, list)) and len(result) >= 1:
-                image_data = result[0]
-                logger.info(f"🤗 [HF ZeroGPU] Image data type: {type(image_data)}")
+            inpaint_lora_list = (
+                self._build_lora_list_from_matched([char_lora_matched]) + shared_lora_list
+            )
+            inpaint_prompt = self._build_character_inpaint_prompt(char_data, slot)
 
-                # gradio_client returns a dict with path/url or a FileData object
-                if isinstance(image_data, dict):
-                    file_path = image_data.get("path") or image_data.get("url")
-                elif hasattr(image_data, "path"):
-                    file_path = image_data.path
-                else:
-                    file_path = str(image_data)
+            try:
+                current_image = await self._generate_pass(
+                    prompt=inpaint_prompt,
+                    loras=inpaint_lora_list,
+                    params={
+                        **mc_params,
+                        "strength": strength_by_z.get(slot["z"], 0.90),
+                        "steps": steps_by_z.get(slot["z"], 22),
+                        "seed_image": base64.b64encode(current_image).decode(),
+                        "mask_image": base64.b64encode(mask_bytes).decode(),
+                    },
+                    pass_name=f"Pass{pass_num}-{char_data['name']}",
+                    negative_prompt=negative_prompt,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"🎭 [MultiChar {request_id}] Pass {pass_num} ({char_data['name']}) failed: {e}. "
+                    "Returning partial result with remaining characters skipped."
+                )
+                break  # Return best image produced so far
 
-                if file_path and os.path.isfile(file_path):
-                    with open(file_path, "rb") as f:
-                        image_bytes = f.read()
-                    logger.info(f"✅ [HF ZeroGPU] Image read from file ({len(image_bytes)} bytes)")
-                    return image_bytes
-                elif file_path and (file_path.startswith("http://") or file_path.startswith("https://")):
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        img_resp = await client.get(file_path)
-                        img_resp.raise_for_status()
-                    logger.info(f"✅ [HF ZeroGPU] Image downloaded from URL ({len(img_resp.content)} bytes)")
-                    return img_resp.content
+        # Step 5: Optional harmonization
+        do_harmonize = (
+            char_count >= 4
+            or (char_count == 3 and Config.MULTI_CHAR_HARMONIZE_3PLUS)
+        )
+        if do_harmonize and Config.MULTI_CHAR_HARMONIZE_ENABLED:
+            logger.info(f"🎭 [MultiChar {request_id}] Running harmonization pass")
+            try:
+                current_image = await self.harmonize(
+                    current_image, scene_data, layout,
+                    shared_loras, mc_params, negative_prompt,
+                )
+            except Exception as e:
+                logger.warning(f"🎭 [MultiChar {request_id}] Harmonization failed ({e}), returning pre-harmonize image")
 
-            # Fallback: try generic extraction
-            image_bytes = await _resolve_image_bytes_from_payload(result, "HF ZeroGPU")
-            logger.info(f"✅ [HF ZeroGPU] Image resolved ({len(image_bytes)} bytes)")
-            return image_bytes
-
-        except Exception as e:
-            logger.error(f"❌ [HF ZeroGPU] FAILED: {e}")
-            raise
+        total_passes = (1 if (char_count == 2 and Config.MULTI_CHAR_2CHAR_SKIP_BG) else 1) + len(remaining_chars) + (1 if do_harmonize and Config.MULTI_CHAR_HARMONIZE_ENABLED else 0)
+        logger.info(f"🎭 [MultiChar {request_id}] Complete: {total_passes} total passes, {char_count} characters")
+        return current_image
 
 
 # ============================================
@@ -1387,14 +1704,17 @@ lora_manager = LoRAManager(Config.LORA_DICT_PATH)
 deepseek_summarizer = DeepSeekSummarizer(Config.TOGETHER_API_KEY)
 clients = {
     "runware": RunwareClient(Config.RUNWARE_API_KEY),
-    "hfzerogpu": HFZeroGPUClient(Config.HF_SPACE_NAME, Config.HF_TOKEN),
     "wavespeed": WavespeedClient(),
     "fal": FALClient(Config.FAL_API_KEY),
     "together": TogetherAIClient(),
-    "pixeldojo": PixelDojoClient(Config.PIXELDOJO_API_KEY),
 }
 
 logger.info(f"🚀 Clients initialized: {list(clients.keys())}")
+
+multi_char_pipeline = MultiCharPipeline(
+    runware_client=clients["runware"],
+    summarizer=deepseek_summarizer,
+)
 
 # ============================================
 # API MODELS
@@ -1572,7 +1892,56 @@ async def txt2img(request: Txt2ImgRequest):
         "height": request.height,
         "seed": seed_used
     }
-    
+
+    # ── Multi-character inpainting pipeline ──────────────────────────────
+    if Config.MULTI_CHAR_ENABLED:
+        character_loras = [m for m in matched_loras if m["data"].get("category") == "character"]
+        non_character_loras = [m for m in matched_loras if m["data"].get("category") != "character"]
+
+        if len(character_loras) >= 2:
+            char_count = min(len(character_loras), Config.MULTI_CHAR_MAX)
+            character_loras = character_loras[:char_count]
+            logger.info("")
+            logger.info("=" * 100)
+            logger.info(f"🎭 MULTI-CHARACTER PIPELINE ({char_count} chars)")
+            logger.info("=" * 100)
+            try:
+                image_bytes = await multi_char_pipeline.generate(
+                    original_prompt=request.prompt,
+                    summarized_prompt=summarized_prompt,
+                    character_loras=character_loras,
+                    shared_loras=non_character_loras,
+                    params=params,
+                    request_id=request_id,
+                    negative_prompt=full_negative,
+                )
+                _validate_image_bytes(image_bytes, "MultiChar")
+                total_time = time.time() - request_start
+                base64_image = base64.b64encode(image_bytes).decode("utf-8")
+                info_dict = {
+                    "original_prompt": request.prompt,
+                    "summarized_prompt": summarized_prompt,
+                    "pipeline": "multi_char",
+                    "character_count": char_count,
+                    "seed": seed_used,
+                    "width": params["width"],
+                    "height": params["height"],
+                    "total_time_seconds": round(total_time, 2),
+                }
+                logger.info(f"✅ [MultiChar {request_id}] Complete in {total_time:.2f}s")
+                return Txt2ImgResponse(
+                    images=[base64_image],
+                    parameters=info_dict,
+                    info=json.dumps(info_dict),
+                )
+            except Exception as e:
+                logger.warning(
+                    f"🎭 [MultiChar {request_id}] Pipeline failed ({e}), "
+                    "falling back to single-pass"
+                )
+                # Fall through to the single-pass provider loop below
+    # ─────────────────────────────────────────────────────────────────────
+
     providers = provider_state.get_provider_list()
     last_error = None
     
