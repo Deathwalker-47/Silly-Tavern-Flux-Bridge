@@ -11,11 +11,9 @@ automatic fallback.
 - Optionally summarizes long prompts using DeepSeek V3 via Together
 - Tries providers in this order:
   1. Runware
-  2. HF ZeroGPU Space
-  3. Wavespeed
-  4. FAL
-  5. Together
-  6. Pixel Dojo
+  2. Wavespeed
+  3. FAL
+  4. Together
 
 ---
 
@@ -47,7 +45,7 @@ ENABLE_SUMMARIZATION=true
 ```
 
 > If you do not use Runware, set credentials for one of the fallback providers
-> (`HF_SPACE_NAME`, `WAVESPEED_API_KEY`, `FAL_API_KEY`, etc.).
+> (`WAVESPEED_API_KEY`, `FAL_API_KEY`, `TOGETHER_API_KEY`).
 
 ---
 
@@ -89,13 +87,9 @@ No plugin-specific endpoint is required for baseline compatibility.
 - `GET /status`
 - `POST /reset`
 
-### Optional OpenAI-style proxy endpoints
-- `POST /v1/chat/completions` (You.com agents backend)
-- `GET /v1/models`
-
-To use chat proxy, set:
-- `YOU_COM_API_KEY`
-- `YOU_COM_DEFAULT_AGENT` (or provide `agent_id` in request payload)
+### Stub OpenAI-style endpoints (no backend configured)
+- `POST /v1/chat/completions` (returns 501 — placeholder for future proxy)
+- `GET /v1/models` (returns empty list)
 
 ---
 
@@ -149,14 +143,6 @@ If successful, response includes a base64 image under `images[0]`.
 ### Bridge starts, but generation fails
 - Check at least one provider credential is valid.
 - Ensure host can reach provider APIs.
-
-### HF provider not working
-- Verify `gradio_client` is installed.
-- Set `HF_SPACE_NAME` correctly.
-- If space is private, set `HF_TOKEN`.
-
-### Chat proxy returns auth errors
-- Verify `YOU_COM_API_KEY` and selected/default agent ID.
 
 ### SillyTavern can’t connect
 - Confirm ST uses `http://localhost:7861`

@@ -35,20 +35,16 @@ curl -X POST http://localhost:7861/sdapi/v1/txt2img \
 ## 4) Provider Order (fallback chain)
 
 1. Runware
-2. HF ZeroGPU Space
-3. Wavespeed
-4. FAL
-5. Together
-6. Pixel Dojo
+2. Wavespeed
+3. FAL
+4. Together
 
 ## 5) Environment Variables You’ll Usually Set
 
 - `RUNWARE_API_KEY`
-- `HF_SPACE_NAME` (+ `HF_TOKEN` if private)
 - `WAVESPEED_API_KEY`
 - `FAL_API_KEY`
 - `TOGETHER_API_KEY`
-- `PIXELDOJO_API_KEY`
 - `ENABLE_SUMMARIZATION`
 
 For full list, see `env.example`.
@@ -75,6 +71,6 @@ If it fails, restart bridge and verify port.
 - Confirm trigger keywords exist in `master_lora_dict.json`.
 - Check bridge logs for matched LoRA IDs.
 
-### Chat proxy failing (`/v1/chat/completions`)
-- Set `YOU_COM_API_KEY`.
-- Set `YOU_COM_DEFAULT_AGENT` or pass `agent_id` in request.
+### Chat proxy (`/v1/chat/completions`)
+- Currently returns 501 (no proxy backend configured).
+- Implement a proxy backend in `flux_lora_bridge.py` to enable.
