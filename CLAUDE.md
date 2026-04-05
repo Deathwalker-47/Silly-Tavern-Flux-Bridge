@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge that exposes an AUTOMATIC1111-compatible `/sdapi/v1/txt2img` endpoint. It routes image generation requests through a cascading chain of Flux LoRA providers (Runware → HF ZeroGPU → Wavespeed → FAL → Together AI → Pixel Dojo) with automatic fallback. Includes a SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`.
+Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge that exposes an AUTOMATIC1111-compatible `/sdapi/v1/txt2img` endpoint. It routes image generation requests through a cascading chain of Flux LoRA providers (Runware → Wavespeed → FAL → Together AI) with automatic fallback. Includes a SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`.
 
 ## Quick Commands
 
@@ -35,18 +35,20 @@ python -m pytest tests/test_provider_response_parsing.py -v
 
 ### Provider Chain (fallback order)
 1. **Runware** (primary, up to 12 LoRAs)
-2. **HF ZeroGPU Space** (Gradio client, up to 10 LoRAs)
-3. **Wavespeed** (up to 4 LoRAs)
-4. **FAL** (up to 3 LoRAs)
-5. **Together AI** (up to 2 LoRAs)
-6. **Pixel Dojo** (1 LoRA)
+2. **Wavespeed** (up to 4 LoRAs)
+3. **FAL** (up to 3 LoRAs)
+4. **Together AI** (up to 2 LoRAs)
 
 ### Key Classes (all in `flux_lora_bridge.py`)
 - `Config` — Loads settings from environment variables
 - `DeepSeekSummarizer` — Optional prompt summarization via Together AI
 - `LoRAManager` — Keyword-based LoRA matching and role-cap filtering
 - `ProviderClient` (abstract) — Base class for all providers
-- Concrete providers: `RunwareClient`, `HFZeroGPUClient`, `WavespeedClient`, `FALClient`, `TogetherAIClient`, `PixelDojoClient`
+- Concrete providers: `RunwareClient`, `WavespeedClient`, `FALClient`, `TogetherAIClient`
+- `ProviderState` — Manages provider selection and fallback ordering
+- `MaskGenerator` — Generates masks for multi-character inpainting
+- `MultiCharPipeline` — Multi-character inpainting pipeline with layout templates
+- `Txt2ImgRequest` / `Txt2ImgResponse` — API request/response models
 
 ### Data Flow
 ```
@@ -65,7 +67,7 @@ Return base64 image
 
 ## Important Notes
 
-- The main app is a single file (`flux_lora_bridge.py`, ~1,873 lines). All core logic lives here.
+- The main app is a single file (`flux_lora_bridge.py`, ~2,077 lines). All core logic lives here.
 - LoRA matching is case-insensitive keyword matching against `master_lora_dict.json`.
 - Role-based LoRA caps: character=6, nsfw=4, expression=2, general=2, misc=1.
 - Image generation timeout: 120s (provider calls: 90s).

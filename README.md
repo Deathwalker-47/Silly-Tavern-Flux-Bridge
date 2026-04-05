@@ -8,16 +8,14 @@ multiple Flux LoRA providers with fallback.
 
 Current provider order in code:
 1) Runware (primary)
-2) HF ZeroGPU Space (gradio)
-3) Wavespeed
-4) FAL
-5) Together
-6) Pixel Dojo
+2) Wavespeed
+3) FAL
+4) Together
 
 It also includes:
 - Keyword-based LoRA matching from `master_lora_dict.json`
 - Optional DeepSeek V3 prompt summarization via Together API
-- OpenAI-compatible chat proxy endpoints (`/v1/chat/completions`, `/v1/models`)
+- Stub OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`) for future proxy use
 
 --------------------------------------------------------------------------------
 QUICK SETUP
@@ -62,8 +60,8 @@ API ENDPOINTS
 - GET  /status                   provider + LoRA status
 - POST /reset                    lightweight reset message endpoint
 - POST /sdapi/v1/txt2img         A1111-compatible txt2img
-- POST /v1/chat/completions      OpenAI-compatible proxy to You.com agents
-- GET  /v1/models                OpenAI-compatible models list
+- POST /v1/chat/completions      (stub, returns 501 — no proxy configured)
+- GET  /v1/models                (stub, returns empty list)
 
 --------------------------------------------------------------------------------
 FILES
