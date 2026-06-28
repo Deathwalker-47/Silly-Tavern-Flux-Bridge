@@ -2189,8 +2189,115 @@ async def chat_completions(request: Request):
 
 @app.get("/v1/models")
 async def models():
-    """Placeholder for future chat proxy integration."""
-    return {"object": "list", "data": []}
+    """OpenAI-compatible model listing. Advertises the single image model so
+    OpenAI clients can populate their model picker."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "flux-dev",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "flux-bridge",
+            }
+        ],
+    }
+
+
+# ============================================
+# OPENAI-COMPATIBLE IMAGE GENERATION
+# ============================================
+# Lets OpenAI image clients (POST /v1/images/generations) drive the bridge.
+# Translates the OpenAI request into the existing /sdapi/v1/txt2img pipeline
+# (LoRA matching, summarization, multi-provider fallback) and maps the result
+# back into the OpenAI image-response shape. No existing code is modified.
+
+class OpenAIImageRequest(BaseModel):
+    prompt: str = Field(default="", description="Image prompt")
+    model: str = Field(default="flux-dev", description="Accepted for compatibility; the bridge selects the provider/model")
+    n: int = Field(default=1, description="Number of images to generate")
+    size: str = Field(default="1024x1024", description="WIDTHxHEIGHT, e.g. 1024x1024")
+    response_format: str = Field(default="url", description="'url' or 'b64_json'")
+    # Optional non-standard passthroughs (honored if a client sends them)
+    negative_prompt: str = Field(default="", description="Optional negative prompt")
+    steps: int = Field(default=40, description="Sampling steps")
+    cfg_scale: float = Field(default=3.5, description="CFG scale")
+    seed: int = Field(default=-1, description="Seed (-1 for random)")
+    user: str = Field(default="", description="Accepted and ignored")
+
+
+def _parse_openai_size(size: str):
+    """Parse an OpenAI 'WIDTHxHEIGHT' size string; fall back to 1024x1024."""
+    try:
+        w_str, h_str = str(size).lower().split("x", 1)
+        w, h = int(w_str), int(h_str)
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return 1024, 1024
+
+
+@app.post("/v1/images/generations")
+async def openai_images_generations(request: OpenAIImageRequest):
+    """OpenAI-compatible image generation.
+
+    Maps onto the existing txt2img pipeline and returns the OpenAI image-response
+    shape: ``{"created": <ts>, "data": [{"url"|"b64_json": ...}]}``. With
+    ``response_format="url"`` the bridge's public image URL is used (falling back
+    to a data URI when public hosting is disabled); ``"b64_json"`` returns raw base64.
+    """
+    width, height = _parse_openai_size(request.size)
+    n = max(1, min(int(request.n or 1), 8))  # cap to keep generation bounded
+    want_url = (request.response_format or "url").lower() == "url"
+
+    logger.info("")
+    logger.info("=" * 100)
+    logger.info(f"🧩 [OpenAI] Image request: n={n} size={width}x{height} "
+                f"format={'url' if want_url else 'b64_json'} model={request.model}")
+    logger.info("=" * 100)
+
+    try:
+        data = []
+        for _ in range(n):
+            internal_req = Txt2ImgRequest(
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt or "",
+                width=width,
+                height=height,
+                steps=request.steps,
+                cfg_scale=request.cfg_scale,
+                seed=request.seed,
+            )
+            result = await txt2img(internal_req)  # reuse the existing pipeline as-is
+
+            b64 = result.images[0] if getattr(result, "images", None) else None
+            urls = getattr(result, "image_urls", None) or []
+            if want_url:
+                if urls:
+                    data.append({"url": urls[0]})
+                elif b64:
+                    data.append({"url": f"data:image/png;base64,{b64}"})
+            elif b64:
+                data.append({"b64_json": b64})
+
+        if not data:
+            raise HTTPException(status_code=500, detail="Image generation produced no output")
+
+        return JSONResponse({"created": int(time.time()), "data": data})
+
+    except HTTPException as e:
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": {"message": e.detail, "type": "bridge_error", "code": e.status_code}},
+        )
+    except Exception as e:
+        logger.error(f"🧩 [OpenAI] Image generation failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": "bridge_error", "code": 500}},
+        )
+
 
 # ============================================
 # MAIN
