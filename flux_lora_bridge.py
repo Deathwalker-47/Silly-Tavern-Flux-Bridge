@@ -2189,8 +2189,19 @@ async def chat_completions(request: Request):
 
 @app.get("/v1/models")
 async def models():
-    """Placeholder for future chat proxy integration."""
-    return {"object": "list", "data": []}
+    """OpenAI-compatible model listing. Advertises the single image model so
+    OpenAI clients can populate their model picker."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "flux-dev",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "flux-bridge",
+            }
+        ],
+    }
 
 
 # ============================================
