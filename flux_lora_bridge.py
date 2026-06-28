@@ -206,6 +206,8 @@ import logging
 import base64
 import asyncio
 import time
+import threading
+from collections import OrderedDict
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 import os
@@ -314,6 +316,16 @@ class Config:
     MULTI_CHAR_CANVAS_W = int(os.getenv("MULTI_CHAR_CANVAS_W", 1536))
     MULTI_CHAR_CANVAS_H = int(os.getenv("MULTI_CHAR_CANVAS_H", 1024))
 
+    # ---- Public image hosting ----
+    # When enabled, every generated image is cached in memory and exposed at
+    # {PUBLIC_BASE_URL}/images/{id} so third parties can fetch it by URL alongside
+    # the base64 payload. PUBLIC_BASE_URL must be the publicly reachable address
+    # of THIS bridge (the SillyTavern host and any third party need to resolve it).
+    IMAGE_URLS_ENABLED = os.getenv("IMAGE_URLS_ENABLED", "true").lower() == "true"
+    PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://bridge.midnighttavern.online").rstrip("/")
+    IMAGE_STORE_TTL = int(os.getenv("IMAGE_STORE_TTL", 600))   # seconds an image stays fetchable
+    IMAGE_STORE_MAX = int(os.getenv("IMAGE_STORE_MAX", 200))   # max images cached at once
+
     @classmethod
     def print_config(cls):
         logger.info("=" * 100)
@@ -335,6 +347,9 @@ class Config:
         logger.info(f"  {'✅' if cls.FAL_API_KEY else '❌'} FAL (FALLBACK) - {'CONFIGURED' if cls.FAL_API_KEY else 'NOT SET'}")
         logger.info(f"  {'✅' if cls.TOGETHER_API_KEY else '❌'} Together (FALLBACK) - {'CONFIGURED' if cls.TOGETHER_API_KEY else 'NOT SET'}")
         logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION else '❌'} DeepSeek V3 Summarization - {'ACTIVE' if cls.ENABLE_SUMMARIZATION else 'DISABLED'}")
+        logger.info("")
+        logger.info("PUBLIC IMAGE URLS:")
+        logger.info(f"  {'✅ ENABLED' if cls.IMAGE_URLS_ENABLED else '❌ DISABLED'} - base: {cls.PUBLIC_BASE_URL or '(not set)'} | TTL: {cls.IMAGE_STORE_TTL}s | cache max: {cls.IMAGE_STORE_MAX}")
         logger.info("=" * 100)
 
 # ============================================
@@ -804,6 +819,87 @@ def _validate_image_bytes(data: bytes, provider_name: str) -> None:
             data[:4] == b'RIFF' or                 # WEBP
             data[:4] == b'GIF8'):                  # GIF
         raise ValueError(f"[{provider_name}] Downloaded data is not a valid image (first bytes: {data[:16].hex()})")
+
+
+# ============================================
+# PUBLIC IMAGE HOSTING (serve generated images by URL)
+# ============================================
+
+# (magic bytes, content type, file extension)
+_CONTENT_TYPE_BY_MAGIC = (
+    (b'\xff\xd8\xff', "image/jpeg", "jpg"),
+    (b'\x89PNG',      "image/png",  "png"),
+    (b'RIFF',         "image/webp", "webp"),
+    (b'GIF8',         "image/gif",  "gif"),
+)
+
+
+def _image_content_type(data: bytes) -> str:
+    """Best-effort content type from image magic bytes (defaults to PNG)."""
+    for magic, content_type, _ext in _CONTENT_TYPE_BY_MAGIC:
+        if data[:len(magic)] == magic:
+            return content_type
+    return "image/png"
+
+
+def _content_type_ext(content_type: str) -> str:
+    for _magic, ct, ext in _CONTENT_TYPE_BY_MAGIC:
+        if ct == content_type:
+            return ext
+    return "png"
+
+
+class ImageStore:
+    """In-memory TTL cache of generated images so they can be served by URL.
+
+    Single-process only (matches the single-worker uvicorn deployment). Entries
+    expire after Config.IMAGE_STORE_TTL seconds and the cache is capped at
+    Config.IMAGE_STORE_MAX entries (oldest evicted first).
+    """
+
+    def __init__(self):
+        self._items = OrderedDict()  # id -> (data, content_type, expiry_ts)
+        self._lock = threading.Lock()
+
+    def _purge_expired(self, now: float):
+        for key in [k for k, (_d, _c, exp) in self._items.items() if exp <= now]:
+            self._items.pop(key, None)
+
+    def add(self, data: bytes, content_type: str = "image/png") -> str:
+        image_id = uuid.uuid4().hex
+        now = time.time()
+        with self._lock:
+            self._purge_expired(now)
+            while len(self._items) >= Config.IMAGE_STORE_MAX:
+                self._items.popitem(last=False)  # evict oldest
+            self._items[image_id] = (data, content_type, now + Config.IMAGE_STORE_TTL)
+        return image_id
+
+    def get(self, image_id: str):
+        """Return (data, content_type) if present and unexpired, else None."""
+        now = time.time()
+        with self._lock:
+            entry = self._items.get(image_id)
+            if entry is None:
+                return None
+            data, content_type, exp = entry
+            if exp <= now:
+                self._items.pop(image_id, None)
+                return None
+            return data, content_type
+
+
+image_store = ImageStore()
+
+
+def _publish_image_url(image_bytes: bytes):
+    """Cache image bytes and return a public fetchable URL, or None if disabled."""
+    if not Config.IMAGE_URLS_ENABLED or not Config.PUBLIC_BASE_URL:
+        return None
+    content_type = _image_content_type(image_bytes)
+    ext = _content_type_ext(content_type)
+    image_id = image_store.add(image_bytes, content_type)
+    return f"{Config.PUBLIC_BASE_URL}/images/{image_id}.{ext}"
 
 
 # ============================================
@@ -1734,6 +1830,7 @@ class Txt2ImgRequest(BaseModel):
 
 class Txt2ImgResponse(BaseModel):
     images: list[str] = Field(description="Base64-encoded images")
+    image_urls: list[str] = Field(default_factory=list, description="Public fetchable URLs for the generated images")
     parameters: dict = Field(description="Generation parameters")
     info: str = Field(description="Generation info JSON string")
 
@@ -1783,6 +1880,22 @@ async def get_status():
 @app.post("/reset")
 async def manual_reset():
     return {"message": "Bridge reset", "status": "running"}
+
+
+@app.get("/images/{image_id}")
+async def get_image(image_id: str):
+    """Serve a generated image by id. URLs are returned in Txt2ImgResponse.image_urls
+    and stay valid for Config.IMAGE_STORE_TTL seconds after generation."""
+    from fastapi.responses import Response  # imported lazily; not part of the test stubs
+    entry = image_store.get(image_id.rsplit(".", 1)[0])  # tolerate an optional .ext suffix
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Image not found or expired")
+    data, content_type = entry
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": f"public, max-age={Config.IMAGE_STORE_TTL}"},
+    )
 
 
 
@@ -1909,6 +2022,7 @@ async def txt2img(request: Txt2ImgRequest):
                 _validate_image_bytes(image_bytes, "MultiChar")
                 total_time = time.time() - request_start
                 base64_image = base64.b64encode(image_bytes).decode("utf-8")
+                image_url = _publish_image_url(image_bytes)
                 info_dict = {
                     "original_prompt": request.prompt,
                     "summarized_prompt": summarized_prompt,
@@ -1918,10 +2032,14 @@ async def txt2img(request: Txt2ImgRequest):
                     "width": params["width"],
                     "height": params["height"],
                     "total_time_seconds": round(total_time, 2),
+                    "image_url": image_url,
                 }
                 logger.info(f"✅ [MultiChar {request_id}] Complete in {total_time:.2f}s")
+                if image_url:
+                    logger.info(f"🔗 [MultiChar {request_id}] Public URL: {image_url}")
                 return Txt2ImgResponse(
                     images=[base64_image],
+                    image_urls=[image_url] if image_url else [],
                     parameters=info_dict,
                     info=json.dumps(info_dict),
                 )
@@ -1958,9 +2076,10 @@ async def txt2img(request: Txt2ImgRequest):
             logger.info(f"✅ [Request {request_id}] Total generation took {total_gen_time*1000:.0f}ms")
             
             base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            
+            image_url = _publish_image_url(image_bytes)
+
             total_time = time.time() - request_start
-            
+
             info_dict = {
                 "original_prompt": request.prompt,
                 "summarized_prompt": summarized_prompt,
@@ -1974,18 +2093,22 @@ async def txt2img(request: Txt2ImgRequest):
                 "provider": provider,
                 "loras_used": len(lora_list),
                 "summarization_enabled": Config.ENABLE_SUMMARIZATION,
-                "total_time_seconds": round(total_time, 2)
+                "total_time_seconds": round(total_time, 2),
+                "image_url": image_url
             }
             
             logger.info("")
             logger.info("=" * 100)
             logger.info(f"✅ GENERATION COMPLETE ({provider.upper()})")
             logger.info(f"⏱️  Total time: {total_time:.2f}s")
+            if image_url:
+                logger.info(f"🔗 Public URL: {image_url}")
             logger.info("=" * 100)
             logger.info("")
-            
+
             return Txt2ImgResponse(
                 images=[base64_image],
+                image_urls=[image_url] if image_url else [],
                 parameters=info_dict,
                 info=json.dumps(info_dict)
             )
