@@ -217,7 +217,7 @@ from pydantic import BaseModel, Field
 
 import uvicorn
 import httpx
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from io import BytesIO
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -284,6 +284,28 @@ class Config:
     # RUNWARE_MODEL = os.getenv("RUNWARE_MODEL", "deathwalker:101010@1")   # Flux mania nsfw
     RUNWARE_MODEL = os.getenv("RUNWARE_MODEL", "runware:101@1")  # base flux dev
 
+    # ---- FLUX.1 Kontext (instruction-based image editing, POST /edit) ----
+    # Known AIR ids (Runware model docs):
+    #   bfl:3@1        Kontext [pro]  - hosted, up to 2 reference images
+    #   bfl:4@1        Kontext [max]  - hosted, best identity retention, up to 2 refs
+    #   runware:106@1  Kontext [dev]  - open weights, accepts steps/CFGScale
+    # The bfl:* models do not expose steps/CFGScale, so those are only sent for
+    # models that document them (see _kontext_supports_sampling).
+    KONTEXT_MODEL = os.getenv("KONTEXT_MODEL", "bfl:3@1")
+    KONTEXT_STEPS = int(os.getenv("KONTEXT_STEPS", 28))
+    KONTEXT_CFG = float(os.getenv("KONTEXT_CFG", 2.5))
+    KONTEXT_TIMEOUT = int(os.getenv("KONTEXT_TIMEOUT", 180))
+    # Upload inputs to Runware first and reference them by UUID rather than inlining
+    # multi-MB data URIs into every inference request (matters on phone uploads).
+    KONTEXT_UPLOAD_IMAGES = os.getenv("KONTEXT_UPLOAD_IMAGES", "true").lower() == "true"
+    # Runware stores uploads at max 2048px anyway, so shrink before sending.
+    KONTEXT_MAX_EDGE = int(os.getenv("KONTEXT_MAX_EDGE", 2048))
+    KONTEXT_MAX_INPUT_MB = float(os.getenv("KONTEXT_MAX_INPUT_MB", 25))
+    # Where referenceImages sits in the task payload. The model docs specify
+    # "inputs.referenceImages"; "auto" sends that and retries once at the root level
+    # if the API rejects the shape. Force with "inputs" or "root".
+    KONTEXT_REFERENCE_MODE = os.getenv("KONTEXT_REFERENCE_MODE", "auto").lower()
+
     # Atlas Cloud (LEGACY/REMOVED)
     ATLASCLOUD_API_KEY = os.getenv("ATLASCLOUD_API_KEY", "")
     ATLASCLOUD_ENDPOINT = "https://api.atlascloud.ai/v1/text2image"
@@ -347,6 +369,11 @@ class Config:
         logger.info(f"  {'✅' if cls.FAL_API_KEY else '❌'} FAL (FALLBACK) - {'CONFIGURED' if cls.FAL_API_KEY else 'NOT SET'}")
         logger.info(f"  {'✅' if cls.TOGETHER_API_KEY else '❌'} Together (FALLBACK) - {'CONFIGURED' if cls.TOGETHER_API_KEY else 'NOT SET'}")
         logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION else '❌'} DeepSeek V3 Summarization - {'ACTIVE' if cls.ENABLE_SUMMARIZATION else 'DISABLED'}")
+        logger.info("")
+        logger.info("FLUX KONTEXT IMAGE EDIT (POST /edit):")
+        logger.info(f"  Model: {cls.KONTEXT_MODEL} | steps: {cls.KONTEXT_STEPS} | CFG: {cls.KONTEXT_CFG} | timeout: {cls.KONTEXT_TIMEOUT}s")
+        logger.info(f"  Upload inputs to Runware: {cls.KONTEXT_UPLOAD_IMAGES} | max edge: {cls.KONTEXT_MAX_EDGE}px | max input: {cls.KONTEXT_MAX_INPUT_MB}MB")
+        logger.info(f"  referenceImages placement: {cls.KONTEXT_REFERENCE_MODE}")
         logger.info("")
         logger.info("PUBLIC IMAGE URLS:")
         logger.info(f"  {'✅ ENABLED' if cls.IMAGE_URLS_ENABLED else '❌ DISABLED'} - base: {cls.PUBLIC_BASE_URL or '(not set)'} | TTL: {cls.IMAGE_STORE_TTL}s | cache max: {cls.IMAGE_STORE_MAX}")
@@ -770,7 +797,11 @@ def _extract_image_candidate(payload):
                 return cand
         return None
     if isinstance(payload, dict):
-        direct_keys = ("imageURL", "image_url", "imageUrl", "image", "url", "b64_json", "base64")
+        # imageBase64Data / imageDataURI are what Runware returns for the non-default
+        # outputType values; without them the scan below falls through and picks up a
+        # neighbouring string field (e.g. taskType) as if it were the image.
+        direct_keys = ("imageURL", "image_url", "imageUrl", "imageBase64Data", "imageDataURI",
+                       "image", "url", "b64_json", "base64")
         for key in direct_keys:
             if key in payload and payload[key]:
                 cand = _extract_image_candidate(payload[key])
@@ -903,6 +934,193 @@ def _publish_image_url(image_bytes: bytes):
 
 
 # ============================================
+# FLUX KONTEXT INPUT PREPARATION (POST /edit)
+# ============================================
+# Kontext only accepts a fixed set of output dimensions, so an arbitrary phone
+# photo has to be snapped to the closest one. Listed widest-to-tallest; each pair
+# is (width, height) exactly as Runware documents it.
+KONTEXT_DIMENSIONS = (
+    (1568, 672),   # 21:9
+    (1392, 752),   # 16:9
+    (1248, 832),   # 3:2
+    (1184, 880),   # 4:3
+    (1024, 1024),  # 1:1
+    (880, 1184),   # 3:4
+    (832, 1248),   # 2:3
+    (752, 1392),   # 9:16
+    (672, 1568),   # 9:21
+)
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _is_runware_image_uuid(value: str) -> bool:
+    """True for an already-uploaded Runware image reference (passed through as-is)."""
+    return isinstance(value, str) and bool(_UUID_RE.match(value.strip()))
+
+
+def _kontext_supports_sampling(model: str) -> bool:
+    """Whether this Kontext variant accepts steps/CFGScale.
+
+    The BFL-hosted models (bfl:3@1 pro, bfl:4@1 max) don't document either and
+    reject unknown parameters; the open-weight dev model (runware:106@1) takes both.
+    """
+    return not str(model or "").strip().lower().startswith("bfl:")
+
+
+def _closest_kontext_size(width: int, height: int) -> Tuple[int, int]:
+    """Snap source dimensions to the supported Kontext size with the nearest aspect."""
+    if not width or not height:
+        return (1024, 1024)
+    target = width / height
+    return min(KONTEXT_DIMENSIONS, key=lambda wh: abs((wh[0] / wh[1]) - target))
+
+
+async def _load_edit_image_bytes(value: str, label: str) -> bytes:
+    """Resolve one /edit input to raw bytes.
+
+    Accepts a data URI, a bare base64 string, or an http(s) URL. Runware UUIDs are
+    handled by the caller and never reach here.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label}: no image provided")
+    value = value.strip()
+
+    if value.startswith(("http://", "https://")):
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(value)
+            response.raise_for_status()
+            data = response.content
+    else:
+        decoded = _try_decode_base64(value)
+        if decoded is None:
+            raise ValueError(f"{label}: expected a data URI, base64 string, image URL or Runware UUID")
+        data = decoded
+
+    max_bytes = int(Config.KONTEXT_MAX_INPUT_MB * 1024 * 1024)
+    if len(data) > max_bytes:
+        raise ValueError(
+            f"{label}: image is {len(data) / 1024 / 1024:.1f}MB, over the "
+            f"{Config.KONTEXT_MAX_INPUT_MB}MB limit"
+        )
+    _validate_image_bytes(data, f"Kontext/{label}")
+    return data
+
+
+def _normalize_edit_image(data: bytes, label: str) -> Tuple[bytes, int, int]:
+    """Straighten, flatten and shrink an input image; return (jpeg_bytes, w, h).
+
+    Phone photos carry EXIF rotation that Kontext won't honour, often have an alpha
+    channel, and are far larger than the 2048px Runware keeps — all handled here so
+    the edit is performed on the image the user actually sees.
+    """
+    try:
+        with Image.open(BytesIO(data)) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            width, height = img.size
+            max_edge = Config.KONTEXT_MAX_EDGE
+            if max_edge and max(width, height) > max_edge:
+                scale = max_edge / max(width, height)
+                width, height = max(1, round(width * scale)), max(1, round(height * scale))
+                img = img.resize((width, height), Image.LANCZOS)
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=95)
+            return buffer.getvalue(), width, height
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"{label}: could not read image ({e})")
+
+
+def _to_data_uri(image_bytes: bytes) -> str:
+    content_type = _image_content_type(image_bytes)
+    return f"data:{content_type};base64," + base64.b64encode(image_bytes).decode("utf-8")
+
+
+def _extract_image_uuid(payload):
+    """Pull the imageUUID out of an imageUpload response."""
+    if isinstance(payload, dict):
+        value = payload.get("imageUUID")
+        if isinstance(value, str) and value:
+            return value
+        for nested in payload.values():
+            found = _extract_image_uuid(nested)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for item in payload:
+            found = _extract_image_uuid(item)
+            if found:
+                return found
+    return None
+
+
+def _runware_error_text(payload) -> Optional[str]:
+    """Return a joined message if a Runware response carries task errors, else None.
+
+    Runware can report failures inside an otherwise-200 body, which would surface as
+    a confusing "no image candidate" further down.
+    """
+    if not isinstance(payload, dict):
+        return None
+    errors = payload.get("errors")
+    if not errors:
+        return None
+    messages = []
+    for err in errors if isinstance(errors, list) else [errors]:
+        if isinstance(err, dict):
+            parts = [str(err.get(k)) for k in ("message", "parameter", "code") if err.get(k)]
+            messages.append(" | ".join(parts) if parts else str(err))
+        else:
+            messages.append(str(err))
+    return "; ".join(messages) or None
+
+
+async def _prepare_kontext_inputs(image: str, reference_image: Optional[str], req_id: str):
+    """Turn the caller's images into Runware references plus an output size.
+
+    Returns (references, width, height). The first reference is the image being
+    edited and decides the output dimensions; the optional second is the reference
+    Kontext should borrow from (a face, a style, an object).
+    """
+    references, dimensions = [], None
+
+    for label, value in (("image", image), ("reference_image", reference_image)):
+        if not value:
+            continue
+        if _is_runware_image_uuid(value):
+            logger.info(f"🖌️ [Edit {req_id}] {label}: using existing Runware UUID")
+            references.append(value.strip())
+            continue
+
+        raw = await _load_edit_image_bytes(value, label)
+        normalized, width, height = _normalize_edit_image(raw, label)
+        if dimensions is None:
+            dimensions = (width, height)
+        logger.info(
+            f"🖌️ [Edit {req_id}] {label}: {len(raw) / 1024:.0f}KB -> "
+            f"{len(normalized) / 1024:.0f}KB at {width}x{height}"
+        )
+
+        if Config.KONTEXT_UPLOAD_IMAGES:
+            try:
+                references.append(await clients["runware"].upload_image(normalized, label))
+                continue
+            except Exception as e:
+                # Not fatal: inline data URIs are still a valid reference format.
+                logger.warning(f"🖌️ [Edit {req_id}] {label}: upload failed ({e}), inlining instead")
+        references.append(_to_data_uri(normalized))
+
+    if not references:
+        raise ValueError("image: no image provided")
+
+    width, height = _closest_kontext_size(*dimensions) if dimensions else (1024, 1024)
+    return references, width, height
+
+
+# ============================================
 # RUNWARE CLIENT (PRIMARY)
 # ============================================
 class RunwareClient(ProviderClient):
@@ -987,6 +1205,127 @@ class RunwareClient(ProviderClient):
         except Exception as e:
             logger.error(f"🌐 [Runware] ❌ FAILED: {e}")
             raise
+
+    # ------------------------------------------------------------------
+    # FLUX Kontext instruction editing (POST /edit)
+    # Separate from generate() on purpose: no LoRAs, no mask, no summarization.
+    # ------------------------------------------------------------------
+
+    async def upload_image(self, image_bytes: bytes, label: str = "image") -> str:
+        """Store an image on Runware and return its imageUUID.
+
+        Keeps large inputs out of the inference request body. Runware retains
+        uploads for 30 days after last use.
+        """
+        if not self.api_key:
+            raise ValueError("RUNWARE_API_KEY not configured")
+
+        task = {
+            "taskType": "imageUpload",
+            "taskUUID": str(uuid.uuid4()),
+            "image": _to_data_uri(image_bytes),
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=Config.KONTEXT_TIMEOUT) as client:
+            response = await client.post(self.endpoint, json=[task], headers=headers)
+
+        if response.status_code != 200:
+            raise Exception(f"Runware imageUpload error {response.status_code}: {response.text[:200]}")
+
+        result = response.json()
+        error_text = _runware_error_text(result)
+        if error_text:
+            raise Exception(f"Runware imageUpload rejected: {error_text}")
+
+        image_uuid = _extract_image_uuid(result)
+        if not image_uuid:
+            raise Exception("Runware imageUpload returned no imageUUID")
+        logger.info(f"🖌️ [Kontext] Uploaded {label} ({len(image_bytes) / 1024:.0f}KB) -> {image_uuid}")
+        return image_uuid
+
+    async def _post_kontext_task(self, task: Dict, references: List[str], mode: str):
+        """POST one Kontext task with referenceImages placed per `mode`."""
+        payload_task = dict(task)
+        if mode == "root":
+            payload_task["referenceImages"] = references
+        else:
+            payload_task["inputs"] = {"referenceImages": references}
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=Config.KONTEXT_TIMEOUT) as client:
+            return await client.post(self.endpoint, json=[payload_task], headers=headers)
+
+    async def edit(self, instruction: str, images: List[str], params: Dict) -> bytes:
+        """FLUX.1 Kontext instruction edit.
+
+        `images` holds Runware references (UUIDs or data URIs); the first is the
+        image being edited. The instruction is passed through verbatim — no LoRA
+        matching and no DeepSeek rewriting, which would fight Kontext's literal
+        reading of the edit request.
+        """
+        if not self.api_key:
+            raise ValueError("RUNWARE_API_KEY not configured")
+        if not instruction or not instruction.strip():
+            raise ValueError("Kontext edit requires an instruction")
+        if not images:
+            raise ValueError("Kontext edit requires at least one image")
+
+        model = params.get("model") or Config.KONTEXT_MODEL
+        # pro/max accept at most 2; trimming beats a hard 400 from the API.
+        if len(images) > 2:
+            logger.warning(f"🖌️ [Kontext] {len(images)} references supplied, using the first 2")
+            images = images[:2]
+
+        width, height = _closest_kontext_size(params.get("width"), params.get("height"))
+        task: Dict = {
+            "taskType": "imageInference",
+            "taskUUID": str(uuid.uuid4()),
+            "model": model,
+            "positivePrompt": instruction,
+            "width": width,
+            "height": height,
+            "numberResults": 1,
+            "outputFormat": "JPG",
+        }
+        if _kontext_supports_sampling(model):
+            task["steps"] = params.get("steps") or Config.KONTEXT_STEPS
+            task["CFGScale"] = params.get("cfg_scale") or Config.KONTEXT_CFG
+        elif params.get("steps") or params.get("cfg_scale"):
+            logger.info(f"🖌️ [Kontext] {model} ignores steps/CFGScale — dropping them")
+
+        modes = (
+            ["inputs", "root"]
+            if Config.KONTEXT_REFERENCE_MODE == "auto"
+            else [Config.KONTEXT_REFERENCE_MODE]
+        )
+        logger.info(
+            f"🖌️ [Kontext] model={model} size={width}x{height} refs={len(images)} "
+            f"instruction={instruction[:120]}"
+        )
+
+        last_error = None
+        for attempt, mode in enumerate(modes):
+            response = await self._post_kontext_task(task, images, mode)
+            error_text = None
+            if response.status_code == 200:
+                result = response.json()
+                error_text = _runware_error_text(result)
+                if not error_text:
+                    image_bytes = await _resolve_image_bytes_from_payload(result, "RunwareKontext")
+                    _validate_image_bytes(image_bytes, "RunwareKontext")
+                    logger.info(f"✅ [Kontext] Edited image ({len(image_bytes)} bytes) via '{mode}' shape")
+                    return image_bytes
+            else:
+                error_text = f"HTTP {response.status_code}: {response.text[:300]}"
+
+            last_error = error_text
+            logger.error(f"🖌️ [Kontext] '{mode}' shape failed — {error_text}")
+            # Only the payload shape is worth a second try; anything else will fail again.
+            if attempt + 1 < len(modes) and "referenceimages" in (error_text or "").lower():
+                logger.warning("🖌️ [Kontext] Retrying with referenceImages at the root level")
+                continue
+            break
+
+        raise Exception(f"Runware Kontext edit failed: {last_error}")
 
 # ============================================================================
 # WAVESPEED CLIENT
@@ -1828,6 +2167,17 @@ class Txt2ImgRequest(BaseModel):
     character_prompts: dict = Field(default_factory=dict, description="Map of character name to their SD prompt/trigger words")
     visible_characters: list = Field(default_factory=list, description="List of character names visible in recent chat")
 
+class EditRequest(BaseModel):
+    image: str = Field(default="", description="Image to edit: data URI, base64, http(s) URL or Runware image UUID")
+    instruction: str = Field(default="", description="Natural-language edit instruction, used verbatim")
+    reference_image: Optional[str] = Field(default=None, description="Optional second image for Kontext to borrow from (e.g. a face)")
+    steps: Optional[int] = Field(default=None, description="Only honoured by Kontext [dev]")
+    cfg_scale: Optional[float] = Field(default=None, description="Only honoured by Kontext [dev]")
+    model: Optional[str] = Field(default=None, description="Override the Kontext model AIR id")
+    width: Optional[int] = Field(default=None, description="Override output size; snapped to the nearest supported Kontext size")
+    height: Optional[int] = Field(default=None, description="Override output size; snapped to the nearest supported Kontext size")
+
+
 class Txt2ImgResponse(BaseModel):
     images: list[str] = Field(description="Base64-encoded images")
     image_urls: list[str] = Field(default_factory=list, description="Public fetchable URLs for the generated images")
@@ -1851,7 +2201,7 @@ async def root():
         "service": "Flux LoRA Bridge",
         "version": "3.0.0",
         "status": "running",
-        "features": "DeepSeek V3 prompt summarization, Keyword-based LoRA injection, Multi-provider fallback (Runware, Wavespeed, FAL, Together), Comprehensive logging"
+        "features": "DeepSeek V3 prompt summarization, Keyword-based LoRA injection, Multi-provider fallback (Runware, Wavespeed, FAL, Together), FLUX Kontext instruction editing (POST /edit, GET /edit-ui), Comprehensive logging"
     }
 
 @app.get("/sdapi/v1/options")
@@ -1897,6 +2247,274 @@ async def get_image(image_id: str):
         headers={"Cache-Control": f"public, max-age={Config.IMAGE_STORE_TTL}"},
     )
 
+
+
+@app.post("/edit")
+async def edit_image(request: EditRequest):
+    """FLUX.1 Kontext instruction edit.
+
+    Send the image to change plus a plain-English instruction; optionally a second
+    reference image to graft a face, style or object from. Returns the same shape as
+    txt2img (``images`` base64 + ``image_urls``) so existing clients can reuse it.
+
+    Deliberately bypasses LoRA matching, DeepSeek summarization and the multi-char
+    inpaint pipeline — Kontext works off the literal instruction.
+    """
+    req_id = uuid.uuid4().hex[:8]
+    started = time.time()
+    instruction = (request.instruction or "").strip()
+
+    logger.info("")
+    logger.info("=" * 100)
+    logger.info(f"🖌️ [Edit {req_id}] instruction={instruction[:160]}")
+    logger.info(f"🖌️ [Edit {req_id}] reference image: {'yes' if request.reference_image else 'no'}")
+    logger.info("=" * 100)
+
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+    if not (request.image or "").strip():
+        raise HTTPException(status_code=400, detail="image is required")
+
+    try:
+        references, width, height = await _prepare_kontext_inputs(
+            request.image, request.reference_image, req_id
+        )
+    except ValueError as e:
+        logger.error(f"🖌️ [Edit {req_id}] Bad input: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"🖌️ [Edit {req_id}] Could not read input images: {e}")
+        raise HTTPException(status_code=400, detail=f"Could not read input images: {e}")
+
+    if request.width and request.height:
+        width, height = _closest_kontext_size(request.width, request.height)
+
+    params = {"width": width, "height": height}
+    for key, value in (("steps", request.steps), ("cfg_scale", request.cfg_scale), ("model", request.model)):
+        if value is not None:
+            params[key] = value
+
+    try:
+        image_bytes = await clients["runware"].edit(instruction, references, params)
+    except ValueError as e:
+        logger.error(f"🖌️ [Edit {req_id}] FAILED: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"🖌️ [Edit {req_id}] FAILED: {e}")
+        raise HTTPException(status_code=502, detail=f"Kontext edit failed: {e}")
+
+    elapsed = time.time() - started
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    url = _publish_image_url(image_bytes)
+    logger.info(f"✅ [Edit {req_id}] Done in {elapsed:.1f}s ({len(image_bytes)} bytes) url={url or 'disabled'}")
+
+    return JSONResponse({
+        "images": [b64],
+        "image_urls": [url] if url else [],
+        "parameters": {
+            "instruction": instruction,
+            "model": params.get("model") or Config.KONTEXT_MODEL,
+            "width": width,
+            "height": height,
+            "reference_images": len(references),
+        },
+        "info": json.dumps({"request_id": req_id, "elapsed_seconds": round(elapsed, 2)}),
+    })
+
+
+@app.post("/sdapi/v1/img2img")
+async def img2img(request: Request):
+    """AUTOMATIC1111-shaped alias for /edit, for clients that already speak img2img.
+
+    Maps ``init_images[0]`` + ``prompt`` onto the Kontext edit path and answers in the
+    txt2img response shape. Masks and denoising_strength are not supported — Kontext
+    edits from the instruction, not a mask.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    init_images = body.get("init_images") or []
+    if not init_images:
+        raise HTTPException(status_code=400, detail="init_images[0] is required")
+
+    result = await edit_image(EditRequest(
+        image=init_images[0],
+        instruction=body.get("prompt") or "",
+        reference_image=init_images[1] if len(init_images) > 1 else None,
+        steps=body.get("steps"),
+        cfg_scale=body.get("cfg_scale"),
+        width=body.get("width"),
+        height=body.get("height"),
+    ))
+    return result
+
+
+EDIT_UI_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kontext Image Edit</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:#14161a; color:#e8eaed; line-height:1.5; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { font-size:1.25rem; margin:0 0 4px; }
+  .sub { color:#9aa0a6; font-size:.85rem; margin:0 0 20px; }
+  label { display:block; font-size:.8rem; text-transform:uppercase; letter-spacing:.05em;
+          color:#9aa0a6; margin:16px 0 6px; }
+  .drop { border:1px dashed #3c4043; border-radius:10px; padding:14px; background:#1c1f24;
+          display:flex; align-items:center; gap:12px; cursor:pointer; }
+  .drop:active { border-color:#8ab4f8; }
+  .drop input { display:none; }
+  .drop span { font-size:.9rem; color:#9aa0a6; }
+  .thumb { width:56px; height:56px; object-fit:cover; border-radius:6px; display:none; flex:none; }
+  textarea { width:100%; min-height:110px; padding:12px; border-radius:10px; border:1px solid #3c4043;
+             background:#1c1f24; color:#e8eaed; font:inherit; font-size:.95rem; resize:vertical; }
+  .presets { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  .presets button { background:#282c33; border:1px solid #3c4043; color:#c8ccd1; border-radius:999px;
+                    padding:6px 12px; font-size:.8rem; cursor:pointer; }
+  #go { width:100%; margin-top:20px; padding:14px; font-size:1rem; font-weight:600; border:none;
+        border-radius:10px; background:#8ab4f8; color:#14161a; cursor:pointer; }
+  #go:disabled { opacity:.5; cursor:default; }
+  #status { margin-top:14px; font-size:.9rem; color:#9aa0a6; min-height:1.4em; }
+  #status.err { color:#f28b82; white-space:pre-wrap; }
+  #out { margin-top:16px; }
+  #out img { width:100%; border-radius:10px; display:none; }
+  .actions { display:none; gap:10px; margin-top:10px; }
+  .actions a, .actions button { flex:1; text-align:center; padding:10px; border-radius:8px;
+      border:1px solid #3c4043; background:#282c33; color:#c8ccd1; font-size:.85rem;
+      text-decoration:none; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kontext Image Edit</h1>
+  <p class="sub">Describe the change in plain English. Add a second image to graft a face, style or object from it.</p>
+
+  <label for="mainFile">Image to edit</label>
+  <div class="drop" onclick="document.getElementById('mainFile').click()">
+    <img id="mainThumb" class="thumb" alt="">
+    <span id="mainName">Tap to choose a photo</span>
+    <input type="file" id="mainFile" accept="image/*">
+  </div>
+
+  <label for="refFile">Reference image (optional)</label>
+  <div class="drop" onclick="document.getElementById('refFile').click()">
+    <img id="refThumb" class="thumb" alt="">
+    <span id="refName">Tap to choose a reference</span>
+    <input type="file" id="refFile" accept="image/*">
+  </div>
+
+  <label for="instruction">Instruction</label>
+  <textarea id="instruction">Replace the face of the main subject with the person in the second reference image. Keep the hairstyle, clothing, jewellery, pose, body, lighting and background exactly the same. Match the skin tone to the scene lighting. Photorealistic, natural skin texture.</textarea>
+  <div class="presets">
+    <button type="button" data-p="Replace the face of the main subject with the person in the second reference image. Keep the hairstyle, clothing, jewellery, pose, body, lighting and background exactly the same. Match the skin tone to the scene lighting. Photorealistic, natural skin texture.">Face swap</button>
+    <button type="button" data-p="Remove the person in the background. Keep everything else in the photo exactly the same.">Remove object</button>
+    <button type="button" data-p="Change the background to a sunset beach. Keep the subject, their pose, clothing and lighting exactly the same.">Change background</button>
+    <button type="button" data-p="Restore and colourise this photo. Remove scratches and noise, keep every facial feature and detail exactly as it is.">Restore photo</button>
+  </div>
+
+  <button id="go">Edit image</button>
+  <div id="status"></div>
+  <div id="out">
+    <img id="result" alt="">
+    <div class="actions" id="actions">
+      <a id="download" download="kontext-edit.jpg">Download</a>
+      <button type="button" id="reuse">Edit this result</button>
+    </div>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const state = { main: null, ref: null };
+
+function wire(inputId, thumbId, nameId, key) {
+  $(inputId).addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      state[key] = reader.result;
+      $(thumbId).src = reader.result;
+      $(thumbId).style.display = 'block';
+      $(nameId).textContent = file.name;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+wire('mainFile', 'mainThumb', 'mainName', 'main');
+wire('refFile', 'refThumb', 'refName', 'ref');
+
+document.querySelectorAll('.presets button').forEach(b => {
+  b.addEventListener('click', () => { $('instruction').value = b.dataset.p; });
+});
+
+$('reuse').addEventListener('click', () => {
+  state.main = $('result').src;
+  $('mainThumb').src = state.main;
+  $('mainThumb').style.display = 'block';
+  $('mainName').textContent = 'previous result';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+$('go').addEventListener('click', async () => {
+  if (!state.main) { $('status').className = 'err'; $('status').textContent = 'Choose an image first.'; return; }
+  const instruction = $('instruction').value.trim();
+  if (!instruction) { $('status').className = 'err'; $('status').textContent = 'Describe the edit first.'; return; }
+
+  $('go').disabled = true;
+  $('actions').style.display = 'none';
+  $('status').className = '';
+  const started = Date.now();
+  const tick = setInterval(() => {
+    $('status').textContent = 'Editing... ' + Math.round((Date.now() - started) / 1000) + 's';
+  }, 500);
+
+  try {
+    const body = { image: state.main, instruction: instruction };
+    if (state.ref) body.reference_image = state.ref;
+    const response = await fetch('/edit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+
+    const src = data.image_urls && data.image_urls[0]
+      ? data.image_urls[0]
+      : 'data:image/jpeg;base64,' + data.images[0];
+    $('result').src = src;
+    $('result').style.display = 'block';
+    $('download').href = src;
+    $('actions').style.display = 'flex';
+    $('status').textContent = 'Done in ' + ((Date.now() - started) / 1000).toFixed(1) + 's';
+  } catch (err) {
+    $('status').className = 'err';
+    $('status').textContent = 'Failed: ' + err.message;
+  } finally {
+    clearInterval(tick);
+    $('go').disabled = false;
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
+@app.get("/edit-ui")
+async def edit_ui():
+    """Self-contained browser UI for /edit — works as-is on a phone."""
+    from fastapi.responses import HTMLResponse  # imported lazily; not part of the test stubs
+    return HTMLResponse(content=EDIT_UI_HTML)
 
 
 @app.post("/sdapi/v1/txt2img")

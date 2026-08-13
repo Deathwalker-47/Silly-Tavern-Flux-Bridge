@@ -81,8 +81,17 @@ def install_test_stubs():
             self.generator = generator
     sse_mod.EventSourceResponse = EventSourceResponse
 
-    pil_mod = types.ModuleType("PIL")
-    pil_mod.Image = object
+    # Only stub PIL when Pillow is genuinely missing. Shadowing a real install would
+    # hide the submodules the bridge imports (ImageDraw, ImageFilter, ImageOps).
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        pil_mod = types.ModuleType("PIL")
+        pil_mod.Image = object
+        pil_mod.ImageDraw = object
+        pil_mod.ImageFilter = object
+        pil_mod.ImageOps = object
+        sys.modules.setdefault("PIL", pil_mod)
 
     sys.modules.setdefault("fastapi", fastapi)
     sys.modules.setdefault("fastapi.middleware.cors", cors_mod)
@@ -92,7 +101,6 @@ def install_test_stubs():
     sys.modules.setdefault("httpx", httpx_mod)
     sys.modules.setdefault("sse_starlette", sse_root)
     sys.modules.setdefault("sse_starlette.sse", sse_mod)
-    sys.modules.setdefault("PIL", pil_mod)
 
 
 install_test_stubs()
