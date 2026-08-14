@@ -30,7 +30,15 @@ curl http://localhost:7861/status
 curl -X POST http://localhost:7861/sdapi/v1/txt2img \
   -H "Content-Type: application/json" \
   -d '{"prompt":"portrait photo","steps":20,"width":1024,"height":1024}'
+
+# image edit test (FLUX Kontext) — image accepts a URL, data URI, base64 or Runware UUID
+curl -X POST http://localhost:7861/edit \
+  -H "Content-Type: application/json" \
+  -d '{"image":"https://example.com/photo.jpg",
+       "instruction":"make the sky sunset orange, keep everything else identical"}'
 ```
+
+Browser UI for editing (works on a phone): `http://localhost:7861/edit-ui`
 
 ## 4) Provider Order (fallback chain)
 
@@ -46,6 +54,7 @@ curl -X POST http://localhost:7861/sdapi/v1/txt2img \
 - `FAL_API_KEY`
 - `TOGETHER_API_KEY`
 - `ENABLE_SUMMARIZATION`
+- `KONTEXT_MODEL` (image editing: `bfl:3@1` pro, `bfl:4@1` max, `runware:106@1` dev)
 
 For full list, see `env.example`.
 
@@ -70,6 +79,15 @@ If it fails, restart bridge and verify port.
 ### No LoRAs applied
 - Confirm trigger keywords exist in `master_lora_dict.json`.
 - Check bridge logs for matched LoRA IDs.
+
+### Image edit (`/edit`) fails
+- `400 RUNWARE_API_KEY not configured` — set `RUNWARE_API_KEY` in `.env`.
+- `400 image: expected a data URI, base64 string, image URL or Runware UUID` — the
+  `image` field could not be decoded; check it is not a bare file path.
+- `502 Kontext edit failed: ...` — the message is Runware's own. If it complains about
+  `referenceImages`, pin the payload shape with `KONTEXT_REFERENCE_MODE=root`.
+- Edit changes too much of the picture — say what to keep in the instruction
+  ("keep the pose, lighting and background exactly the same").
 
 ### Chat proxy (`/v1/chat/completions`)
 - Currently returns 501 (no proxy backend configured).
