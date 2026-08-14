@@ -59,11 +59,26 @@ def install_test_stubs():
     cors_mod.CORSMiddleware = CORSMiddleware
 
     responses_mod = types.ModuleType("fastapi.responses")
-    class JSONResponse(dict): pass
+
+    # Kept identical across the test modules: sys.modules.setdefault means whichever
+    # module imports first installs the stubs for the whole suite, so a thinner
+    # version here would break the others when run under `unittest discover`.
+    class JSONResponse:
+        """Holds either an object or an array, so ``dict(r)`` and ``list(r)`` both work."""
+        def __init__(self, content=None, **kw):
+            self.content = content if content is not None else {}
+        def __iter__(self): return iter(self.content)
+        def __getitem__(self, key): return self.content[key]
+        def __setitem__(self, key, value): self.content[key] = value
+        def keys(self): return self.content.keys()
+
     responses_mod.JSONResponse = JSONResponse
 
     pydantic_mod = types.ModuleType("pydantic")
-    class BaseModel: pass
+    class BaseModel:
+        def __init__(self, **kw):
+            for key, value in kw.items():
+                setattr(self, key, value)
     def Field(default=None, **kwargs): return default
     pydantic_mod.BaseModel = BaseModel
     pydantic_mod.Field = Field

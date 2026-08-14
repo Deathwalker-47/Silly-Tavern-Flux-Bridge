@@ -199,6 +199,7 @@ COMPREHENSIVE LOGGING - Every data point logged
 
 import random
 import hashlib
+import hmac
 import uuid
 import json
 import re
@@ -306,6 +307,22 @@ class Config:
     # if the API rejects the shape. Force with "inputs" or "root".
     KONTEXT_REFERENCE_MODE = os.getenv("KONTEXT_REFERENCE_MODE", "auto").lower()
 
+    # ---- Edit endpoint auth ----
+    # /edit and friends spend Runware credits per call, so they must not be open
+    # to anyone who finds the public URL. Empty = no auth (log a warning).
+    EDIT_API_TOKEN = os.getenv("EDIT_API_TOKEN", "")
+
+    # ---- Immich (photo library source/sink for edits) ----
+    # Optional. When set, the bridge can read photos out of Immich and write the
+    # edited result back, keeping the Immich API key server-side. When it is not
+    # set — or Immich is unreachable — /edit still works on bytes sent by the
+    # client, so a phone that can reach Immich directly can do that half itself.
+    IMMICH_BASE_URL = os.getenv("IMMICH_BASE_URL", "").rstrip("/")
+    IMMICH_API_KEY = os.getenv("IMMICH_API_KEY", "")
+    IMMICH_EDIT_ALBUM = os.getenv("IMMICH_EDIT_ALBUM", "AI Edits")
+    IMMICH_TIMEOUT = int(os.getenv("IMMICH_TIMEOUT", 60))
+    IMMICH_DEVICE_ID = os.getenv("IMMICH_DEVICE_ID", "flux-bridge")
+
     # Atlas Cloud (LEGACY/REMOVED)
     ATLASCLOUD_API_KEY = os.getenv("ATLASCLOUD_API_KEY", "")
     ATLASCLOUD_ENDPOINT = "https://api.atlascloud.ai/v1/text2image"
@@ -374,6 +391,17 @@ class Config:
         logger.info(f"  Model: {cls.KONTEXT_MODEL} | steps: {cls.KONTEXT_STEPS} | CFG: {cls.KONTEXT_CFG} | timeout: {cls.KONTEXT_TIMEOUT}s")
         logger.info(f"  Upload inputs to Runware: {cls.KONTEXT_UPLOAD_IMAGES} | max edge: {cls.KONTEXT_MAX_EDGE}px | max input: {cls.KONTEXT_MAX_INPUT_MB}MB")
         logger.info(f"  referenceImages placement: {cls.KONTEXT_REFERENCE_MODE}")
+        if cls.EDIT_API_TOKEN:
+            logger.info("  Auth: ✅ EDIT_API_TOKEN required")
+        else:
+            logger.warning("  Auth: ⚠️  NO TOKEN SET — /edit is open and spends Runware credits per call. "
+                           "Set EDIT_API_TOKEN if this bridge is reachable from the internet.")
+        logger.info("")
+        logger.info("IMMICH LIBRARY:")
+        if cls.IMMICH_BASE_URL and cls.IMMICH_API_KEY:
+            logger.info(f"  ✅ {cls.IMMICH_BASE_URL} | edits saved to album: {cls.IMMICH_EDIT_ALBUM}")
+        else:
+            logger.info("  ❌ not configured (set IMMICH_BASE_URL + IMMICH_API_KEY to browse/save via the bridge)")
         logger.info("")
         logger.info("PUBLIC IMAGE URLS:")
         logger.info(f"  {'✅ ENABLED' if cls.IMAGE_URLS_ENABLED else '❌ DISABLED'} - base: {cls.PUBLIC_BASE_URL or '(not set)'} | TTL: {cls.IMAGE_STORE_TTL}s | cache max: {cls.IMAGE_STORE_MAX}")
@@ -1118,6 +1146,167 @@ async def _prepare_kontext_inputs(image: str, reference_image: Optional[str], re
 
     width, height = _closest_kontext_size(*dimensions) if dimensions else (1024, 1024)
     return references, width, height
+
+
+# ============================================
+# EDIT ENDPOINT AUTH
+# ============================================
+
+def _check_edit_token(request) -> None:
+    """Gate the endpoints that spend Runware credits.
+
+    Accepts ``Authorization: Bearer <token>`` or ``X-Edit-Token: <token>``. When
+    EDIT_API_TOKEN is unset the endpoints stay open (unchanged behaviour), and the
+    startup banner warns about it.
+    """
+    expected = Config.EDIT_API_TOKEN
+    if not expected:
+        return
+    if request is None:
+        # Internal call from another endpoint that already ran this check.
+        return
+    headers = getattr(request, "headers", None) or {}
+    supplied = headers.get("x-edit-token") or ""
+    if not supplied:
+        auth = headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:]
+    # Constant-time compare so the token can't be recovered by timing the endpoint.
+    if not hmac.compare_digest(supplied.strip(), expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing edit token")
+
+
+# ============================================
+# IMMICH CLIENT (photo library source/sink)
+# ============================================
+
+class ImmichUnavailable(Exception):
+    """Immich is not configured, or the bridge cannot currently reach it."""
+
+
+class ImmichClient:
+    """Async Immich API client. Holds the API key server-side so it never has to
+    live on a phone, and so browser callers avoid Immich's CORS rules entirely."""
+
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = (base_url or "").rstrip("/")
+        self.api_key = api_key or ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url and self.api_key)
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}/api/{path.lstrip('/')}"
+
+    def _headers(self, accept: str = "application/json") -> Dict:
+        return {"x-api-key": self.api_key, "Accept": accept}
+
+    async def _request(self, method: str, path: str, *, expect_json=True, **kwargs):
+        if not self.configured:
+            raise ImmichUnavailable(
+                "Immich is not configured on the bridge (set IMMICH_BASE_URL and IMMICH_API_KEY)"
+            )
+        url = self._url(path)
+        try:
+            async with httpx.AsyncClient(timeout=Config.IMMICH_TIMEOUT, follow_redirects=True) as client:
+                response = await client.request(method, url, headers=self._headers(), **kwargs)
+        except Exception as e:
+            # Network-level failure: the bridge may have lost its route to Immich.
+            raise ImmichUnavailable(f"Cannot reach Immich at {self.base_url}: {e}")
+
+        if response.status_code >= 400:
+            raise ImmichUnavailable(
+                f"Immich {method} /{path.lstrip('/')} failed ({response.status_code}): {response.text[:200]}"
+            )
+        if not expect_json:
+            return response
+        try:
+            return response.json()
+        except Exception:
+            return None
+
+    async def about(self):
+        return await self._request("GET", "server/about")
+
+    async def list_albums(self):
+        return await self._request("GET", "albums")
+
+    async def get_album(self, album_id: str):
+        return await self._request("GET", f"albums/{album_id}")
+
+    async def search_assets(self, page: int = 1, size: int = 60):
+        """Recent images, newest first. POST /search/metadata is the stable way to
+        page the library without reconstructing Immich's timeline buckets."""
+        body = {"page": page, "size": size, "order": "desc", "type": "IMAGE", "withExif": False}
+        return await self._request("POST", "search/metadata", json=body)
+
+    async def fetch_media(self, asset_id: str, kind: str = "thumbnail", size: str = "preview"):
+        """Return (bytes, content_type) for an asset's thumbnail or original."""
+        path = f"assets/{asset_id}/original" if kind == "original" else f"assets/{asset_id}/thumbnail"
+        params = None if kind == "original" else {"size": size}
+        response = await self._request("GET", path, expect_json=False, params=params)
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        return response.content, content_type
+
+    async def upload_asset(self, image_bytes: bytes, filename: str) -> str:
+        """Upload bytes as a new asset and return its id.
+
+        deviceAssetId/deviceId are required by the API; a unique deviceAssetId keeps
+        each edit a distinct asset rather than colliding with a previous upload.
+        """
+        now = datetime.now().isoformat()
+        content_type = _image_content_type(image_bytes)
+        data = {
+            "deviceAssetId": f"{Config.IMMICH_DEVICE_ID}-{uuid.uuid4().hex}",
+            "deviceId": Config.IMMICH_DEVICE_ID,
+            "fileCreatedAt": now,
+            "fileModifiedAt": now,
+            "isFavorite": "false",
+        }
+        files = {"assetData": (filename, image_bytes, content_type)}
+        result = await self._request("POST", "assets", data=data, files=files)
+        asset_id = (result or {}).get("id")
+        if not asset_id:
+            raise ImmichUnavailable(f"Immich upload returned no asset id: {str(result)[:200]}")
+        return asset_id
+
+    async def ensure_album(self, name: str) -> Optional[str]:
+        """Find the album by name, creating it if it doesn't exist yet."""
+        if not name:
+            return None
+        albums = await self.list_albums()
+        for album in albums or []:
+            if isinstance(album, dict) and album.get("albumName") == name:
+                return album.get("id")
+        created = await self._request("POST", "albums", json={
+            "albumName": name,
+            "description": "Generative edits produced by the Flux bridge",
+        })
+        album_id = (created or {}).get("id")
+        logger.info(f"🖼️ [Immich] Created album '{name}' ({album_id})")
+        return album_id
+
+    async def add_to_album(self, album_id: str, asset_ids: List[str]):
+        if not album_id or not asset_ids:
+            return None
+        return await self._request("PUT", f"albums/{album_id}/assets", json={"ids": asset_ids})
+
+    async def save_edit(self, image_bytes: bytes, filename: str) -> Dict:
+        """Upload an edited image and file it in the configured album.
+
+        A failure to reach the album is not fatal — the asset is already in the
+        library at that point, so the id is still returned.
+        """
+        asset_id = await self.upload_asset(image_bytes, filename)
+        album_id, album_name = None, Config.IMMICH_EDIT_ALBUM
+        try:
+            album_id = await self.ensure_album(album_name)
+            await self.add_to_album(album_id, [asset_id])
+        except Exception as e:
+            logger.warning(f"🖼️ [Immich] Uploaded {asset_id} but could not file it in '{album_name}': {e}")
+            album_id = None
+        return {"asset_id": asset_id, "album_id": album_id, "album_name": album_name if album_id else None}
 
 
 # ============================================
@@ -2137,6 +2326,8 @@ clients = {
 
 logger.info(f"🚀 Clients initialized: {list(clients.keys())}")
 
+immich_client = ImmichClient(Config.IMMICH_BASE_URL, Config.IMMICH_API_KEY)
+
 multi_char_pipeline = MultiCharPipeline(
     runware_client=clients["runware"],
     summarizer=deepseek_summarizer,
@@ -2176,6 +2367,17 @@ class EditRequest(BaseModel):
     model: Optional[str] = Field(default=None, description="Override the Kontext model AIR id")
     width: Optional[int] = Field(default=None, description="Override output size; snapped to the nearest supported Kontext size")
     height: Optional[int] = Field(default=None, description="Override output size; snapped to the nearest supported Kontext size")
+
+
+class ImmichEditRequest(BaseModel):
+    asset_id: str = Field(default="", description="Immich asset id of the photo to edit")
+    instruction: str = Field(default="", description="Natural-language edit instruction, used verbatim")
+    reference_asset_id: Optional[str] = Field(default=None, description="Immich asset id to use as the reference image")
+    reference_image: Optional[str] = Field(default=None, description="Reference image as a data URI/URL, if it isn't in Immich")
+    save: bool = Field(default=True, description="Upload the result back into Immich")
+    steps: Optional[int] = Field(default=None, description="Only honoured by Kontext [dev]")
+    cfg_scale: Optional[float] = Field(default=None, description="Only honoured by Kontext [dev]")
+    model: Optional[str] = Field(default=None, description="Override the Kontext model AIR id")
 
 
 class Txt2ImgResponse(BaseModel):
@@ -2250,7 +2452,7 @@ async def get_image(image_id: str):
 
 
 @app.post("/edit")
-async def edit_image(request: EditRequest):
+async def edit_image(request: EditRequest, http_request: Request = None):
     """FLUX.1 Kontext instruction edit.
 
     Send the image to change plus a plain-English instruction; optionally a second
@@ -2260,6 +2462,7 @@ async def edit_image(request: EditRequest):
     Deliberately bypasses LoRA matching, DeepSeek summarization and the multi-char
     inpaint pipeline — Kontext works off the literal instruction.
     """
+    _check_edit_token(http_request)
     req_id = uuid.uuid4().hex[:8]
     started = time.time()
     instruction = (request.instruction or "").strip()
@@ -2332,6 +2535,7 @@ async def img2img(request: Request):
     txt2img response shape. Masks and denoising_strength are not supported — Kontext
     edits from the instruction, not a mask.
     """
+    _check_edit_token(request)
     try:
         body = await request.json()
     except Exception:
@@ -2341,7 +2545,7 @@ async def img2img(request: Request):
     if not init_images:
         raise HTTPException(status_code=400, detail="init_images[0] is required")
 
-    result = await edit_image(EditRequest(
+    return await edit_image(EditRequest(
         image=init_images[0],
         instruction=body.get("prompt") or "",
         reference_image=init_images[1] if len(init_images) > 1 else None,
@@ -2350,7 +2554,164 @@ async def img2img(request: Request):
         width=body.get("width"),
         height=body.get("height"),
     ))
-    return result
+
+
+# ============================================
+# IMMICH ENDPOINTS
+# ============================================
+# Browsing + edit-and-save for an Immich library. Every one of these degrades to a
+# clear 503 when Immich isn't configured or can't be reached, so a client that can
+# talk to Immich itself can fall back to sending bytes to /edit directly.
+
+def _immich_media_response(data: bytes, content_type: str):
+    from fastapi.responses import Response  # imported lazily; not part of the test stubs
+    return Response(content=data, media_type=content_type,
+                    headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.get("/immich/status")
+async def immich_status():
+    """Whether the bridge can currently reach Immich, and where edits are filed."""
+    if not immich_client.configured:
+        return JSONResponse({"configured": False, "reachable": False,
+                             "detail": "Set IMMICH_BASE_URL and IMMICH_API_KEY on the bridge"})
+    try:
+        about = await immich_client.about()
+    except ImmichUnavailable as e:
+        return JSONResponse({"configured": True, "reachable": False, "detail": str(e),
+                             "base_url": Config.IMMICH_BASE_URL})
+    return JSONResponse({
+        "configured": True,
+        "reachable": True,
+        "base_url": Config.IMMICH_BASE_URL,
+        "version": (about or {}).get("version"),
+        "edit_album": Config.IMMICH_EDIT_ALBUM,
+    })
+
+
+@app.get("/immich/albums")
+async def immich_albums():
+    """List albums, trimmed to what a picker needs."""
+    try:
+        albums = await immich_client.list_albums()
+    except ImmichUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return JSONResponse([
+        {"id": a.get("id"), "name": a.get("albumName"), "count": a.get("assetCount"),
+         "thumbnail_asset_id": a.get("albumThumbnailAssetId")}
+        for a in (albums or []) if isinstance(a, dict)
+    ])
+
+
+@app.get("/immich/albums/{album_id}")
+async def immich_album_assets(album_id: str):
+    """Image assets inside one album."""
+    try:
+        album = await immich_client.get_album(album_id)
+    except ImmichUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    assets = [a for a in (album or {}).get("assets", []) if a.get("type") == "IMAGE"]
+    return JSONResponse({
+        "id": (album or {}).get("id"),
+        "name": (album or {}).get("albumName"),
+        "assets": [{"id": a.get("id"), "name": a.get("originalFileName"),
+                    "created_at": a.get("fileCreatedAt")} for a in assets],
+    })
+
+
+@app.get("/immich/assets")
+async def immich_recent_assets(page: int = 1, size: int = 60):
+    """Recent images, newest first — the default view for a picker."""
+    try:
+        result = await immich_client.search_assets(page=page, size=min(max(size, 1), 200))
+    except ImmichUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    items = ((result or {}).get("assets") or {}).get("items") or []
+    return JSONResponse({
+        "page": page,
+        "assets": [{"id": a.get("id"), "name": a.get("originalFileName"),
+                    "created_at": a.get("fileCreatedAt")} for a in items if a.get("type") == "IMAGE"],
+    })
+
+
+@app.get("/immich/assets/{asset_id}/thumbnail")
+async def immich_asset_thumbnail(asset_id: str, size: str = "preview"):
+    try:
+        data, content_type = await immich_client.fetch_media(asset_id, "thumbnail", size)
+    except ImmichUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return _immich_media_response(data, content_type)
+
+
+@app.get("/immich/assets/{asset_id}/original")
+async def immich_asset_original(asset_id: str):
+    try:
+        data, content_type = await immich_client.fetch_media(asset_id, "original")
+    except ImmichUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return _immich_media_response(data, content_type)
+
+
+@app.post("/edit/immich")
+async def edit_immich_asset(request: ImmichEditRequest, http_request: Request = None):
+    """Edit a photo that already lives in Immich and file the result back.
+
+    The one call a client needs: give it an asset id and an instruction, and the
+    bridge pulls the original, runs Kontext, uploads the result and adds it to the
+    edit album. Set ``save=false`` to get the image back without writing to Immich.
+    """
+    _check_edit_token(http_request)
+    req_id = uuid.uuid4().hex[:8]
+    started = time.time()
+    instruction = (request.instruction or "").strip()
+
+    logger.info("")
+    logger.info("=" * 100)
+    logger.info(f"🖼️ [Immich edit {req_id}] asset={request.asset_id} instruction={instruction[:140]}")
+    logger.info("=" * 100)
+
+    if not instruction:
+        raise HTTPException(status_code=400, detail="instruction is required")
+    if not (request.asset_id or "").strip():
+        raise HTTPException(status_code=400, detail="asset_id is required")
+
+    try:
+        original, _ct = await immich_client.fetch_media(request.asset_id, "original")
+        reference = None
+        if request.reference_asset_id:
+            reference, _rct = await immich_client.fetch_media(request.reference_asset_id, "original")
+    except ImmichUnavailable as e:
+        logger.error(f"🖼️ [Immich edit {req_id}] {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Hand the bytes to the same path /edit uses, as data URIs.
+    edit_request = EditRequest(
+        image=_to_data_uri(original),
+        instruction=instruction,
+        reference_image=_to_data_uri(reference) if reference else (request.reference_image or None),
+        model=request.model,
+        steps=request.steps,
+        cfg_scale=request.cfg_scale,
+    )
+    result = await edit_image(edit_request)  # token already checked above
+    payload = json.loads(result.body) if hasattr(result, "body") else dict(result)
+
+    immich_result = None
+    if request.save:
+        try:
+            image_bytes = base64.b64decode(payload["images"][0])
+            filename = f"kontext-{req_id}.jpg"
+            immich_result = await immich_client.save_edit(image_bytes, filename)
+            logger.info(f"🖼️ [Immich edit {req_id}] Saved as asset {immich_result.get('asset_id')}")
+        except ImmichUnavailable as e:
+            # The edit itself succeeded and is in the response — don't throw it away.
+            logger.error(f"🖼️ [Immich edit {req_id}] Edit succeeded but saving failed: {e}")
+            immich_result = {"error": str(e)}
+
+    payload["immich"] = immich_result
+    payload["parameters"]["source_asset_id"] = request.asset_id
+    logger.info(f"✅ [Immich edit {req_id}] Done in {time.time() - started:.1f}s")
+    return JSONResponse(payload)
 
 
 EDIT_UI_HTML = """<!DOCTYPE html>
