@@ -1,0 +1,100 @@
+<div id="flux_media_settings" class="flux-media-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b><i class="fa-solid fa-photo-film"></i> Media Studio (Flux Bridge)</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+
+            <h4>Bridge</h4>
+            <div id="fm_status" class="fm-pill">Not checked</div>
+            <label>Bridge URL <small>(empty = Image Generation's SD WebUI URL)</small>
+                <input id="fm_bridge_url" data-fm="bridgeUrl" class="text_pole" type="text" placeholder="http://localhost:7861">
+            </label>
+            <label>Bridge token <small>(EDIT_API_TOKEN, if your bridge has one)</small>
+                <input id="fm_bridge_token" data-fm="bridgeToken" class="text_pole" type="password" autocomplete="off">
+            </label>
+            <div id="fm_test" class="menu_button menu_button_icon"><i class="fa-solid fa-plug-circle-check"></i><span>Test connection</span></div>
+
+            <hr>
+            <h4>Images</h4>
+            <label>Image mode
+                <select data-fm="imageMode" class="text_pole">
+                    <option value="auto">Auto: text-to-image with LoRA when the character has one, else image-to-image from the avatar</option>
+                    <option value="lora">Always text-to-image with LoRA</option>
+                    <option value="avatar">Always image-to-image from the character's avatar</option>
+                </select>
+            </label>
+            <div class="fm-grid">
+                <label>Size
+                    <select data-fm="imageSize" class="text_pole">
+                        <option value="portrait">Portrait 832×1216</option>
+                        <option value="square">Square 1024×1024</option>
+                        <option value="landscape">Landscape 1216×832</option>
+                    </select>
+                </label>
+                <label>Steps <input data-fm="steps" class="text_pole" type="number" min="1" max="60"></label>
+                <label>CFG <input data-fm="cfg" class="text_pole" type="number" min="1" max="10" step="0.1"></label>
+            </div>
+            <small class="fm-hint">Avatars live in each character's card: the <i class="fa-solid fa-images"></i> button in the character editor.</small>
+
+            <hr>
+            <h4>Auto media</h4>
+            <label>When to send media
+                <select data-fm="autoMedia" class="text_pole">
+                    <option value="director">Helper LLM decides (images and videos)</option>
+                    <option value="every_turn">Every turn: always an image (no LLM decision)</option>
+                    <option value="off">Off (buttons only)</option>
+                </select>
+            </label>
+            <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoImages"> Helper may send images</label>
+            <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoVideos"> Helper may send videos</label>
+            <div class="fm-grid">
+                <label>Messages between images <input data-fm="imageCooldown" class="text_pole" type="number" min="0" max="50"></label>
+                <label>Messages between videos <input data-fm="videoCooldown" class="text_pole" type="number" min="0" max="100"></label>
+                <label>Max images / day <input data-fm="dailyImageCap" class="text_pole" type="number" min="0" max="1000"></label>
+                <label>Max videos / day <input data-fm="dailyVideoCap" class="text_pole" type="number" min="0" max="500"></label>
+            </div>
+            <small id="fm_usage" class="fm-hint"></small>
+            <label class="checkbox_label"><input type="checkbox" data-fm="notifyCharacter"> Tell the character what it sent (one-line note for the next reply)</label>
+
+            <hr>
+            <h4>Video</h4>
+            <div class="fm-grid">
+                <label>Provider <select id="fm_video_provider" data-fm="videoProvider" class="text_pole"></select></label>
+                <label>Model <select id="fm_video_family" data-fm="videoFamily" class="text_pole"></select></label>
+            </div>
+            <label>Variant <select id="fm_video_variant" data-fm="videoVariant" class="text_pole"></select></label>
+            <div class="fm-grid">
+                <label>Duration (s) <input data-fm="videoDuration" class="text_pole" type="number" min="1" max="30"></label>
+                <label>Resolution <select id="fm_video_resolution" data-fm="videoResolution" class="text_pole"></select></label>
+            </div>
+            <small id="fm_video_duration_hint" class="fm-hint"></small>
+            <label id="fm_sogni_network_row">Sogni queue
+                <select id="fm_sogni_network" data-fm="sogniNetwork" class="text_pole">
+                    <option value="">Bridge default</option>
+                    <option value="fast">Fast: dedicated GPUs, billed</option>
+                    <option value="relaxed">Relaxed: free, can queue for an hour or more</option>
+                </select>
+            </label>
+            <label class="checkbox_label"><input type="checkbox" data-fm="videoAudio"> Generate audio (where the model can)</label>
+            <label class="checkbox_label"><input type="checkbox" data-fm="useTwoImages"> When a message has 2+ images, animate from the first to the last</label>
+            <small class="fm-hint">Safety checkers are switched off for every provider that offers the switch. Closed vendor models (Seedance, MiniMax via Runware/Replicate) may still filter on their side.</small>
+
+            <hr>
+            <h4>Helper LLM</h4>
+            <small class="fm-hint">Runs on the bridge (NanoGPT by default): decides when to send media, writes prompts, summarizes scenes and adds voice tags for TavernVoice.</small>
+            <div class="flex-container flexnowrap">
+                <input id="fm_helper_filter" class="text_pole flex1" type="search" placeholder="Filter models (e.g. flash, deepseek, gemini)">
+                <div id="fm_helper_refresh" class="menu_button fa-solid fa-rotate" title="Refresh model list"></div>
+            </div>
+            <select id="fm_helper_model" data-fm="helperModel" class="text_pole"></select>
+            <div id="fm_helper_test" class="menu_button menu_button_icon"><i class="fa-solid fa-vial"></i><span>Test helper</span></div>
+            <small id="fm_helper_out" class="fm-hint"></small>
+
+            <hr>
+            <label class="checkbox_label"><input type="checkbox" data-fm="debug"> Debug logging</label>
+            <small class="fm-hint">Slash commands: <code>/fmimage [prompt]</code>, <code>/fmvideo [motion]</code>. Per message: <i class="fa-solid fa-image"></i> image, <i class="fa-solid fa-film"></i> video.</small>
+        </div>
+    </div>
+</div>

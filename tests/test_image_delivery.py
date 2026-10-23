@@ -274,23 +274,6 @@ class TestProviderImageDelivery(unittest.IsolatedAsyncioTestCase):
         assert_valid_image_bytes(self, image, FAKE_JPEG)
         assert_is_real_image(self, image)
 
-    # --- Pixel Dojo ---
-
-    async def test_pixeldojo_returns_valid_png(self):
-        """Pixel Dojo returns PNG bytes that survive base64 round-trip."""
-        FakeAsyncClient.set_route(
-            "POST", bridge.Config.PIXELDOJO_ENDPOINT,
-            FakeResponse(200, {"images": ["http://cdn/pixeldojo.png"]})
-        )
-        FakeAsyncClient.set_route(
-            "GET", "http://cdn/pixeldojo.png",
-            FakeResponse(200, content=FAKE_PNG)
-        )
-        client = bridge.PixelDojoClient("test-key")
-        image = await client.generate("test prompt", "", [], GEN_PARAMS)
-        assert_valid_image_bytes(self, image, FAKE_PNG)
-        assert_is_real_image(self, image)
-
     # --- Wavespeed ---
 
     async def test_wavespeed_returns_valid_jpeg(self):
@@ -392,42 +375,6 @@ class TestProviderImageDelivery(unittest.IsolatedAsyncioTestCase):
         client.client = FakeTogetherSDK()
         image = await client.generate("test prompt", "", [], GEN_PARAMS)
         assert_valid_image_bytes(self, image, FAKE_PNG)
-        assert_is_real_image(self, image)
-
-    # --- HF ZeroGPU (base64 path) ---
-
-    async def test_hf_base64_returns_valid_webp(self):
-        """HF ZeroGPU base64 response returns WEBP bytes."""
-        encoded = base64.b64encode(FAKE_WEBP).decode('utf-8')
-
-        class FakeGradio:
-            @staticmethod
-            def predict(**kwargs):
-                return {"data": [{"b64_json": encoded}]}
-
-        client = bridge.HFZeroGPUClient.__new__(bridge.HFZeroGPUClient)
-        client.client = FakeGradio()
-        image = await client.generate("test prompt", "", [], GEN_PARAMS)
-        assert_valid_image_bytes(self, image, FAKE_WEBP)
-        assert_is_real_image(self, image)
-
-    # --- HF ZeroGPU (URL path) ---
-
-    async def test_hf_url_returns_valid_jpeg(self):
-        """HF ZeroGPU URL response returns JPEG bytes."""
-        class FakeGradio:
-            @staticmethod
-            def predict(**kwargs):
-                return ({"url": "http://cdn/hf.jpg"}, '{}')
-
-        FakeAsyncClient.set_route(
-            "GET", "http://cdn/hf.jpg",
-            FakeResponse(200, content=FAKE_JPEG)
-        )
-        client = bridge.HFZeroGPUClient.__new__(bridge.HFZeroGPUClient)
-        client.client = FakeGradio()
-        image = await client.generate("test prompt", "", [], GEN_PARAMS)
-        assert_valid_image_bytes(self, image, FAKE_JPEG)
         assert_is_real_image(self, image)
 
 

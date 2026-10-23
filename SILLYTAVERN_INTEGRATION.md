@@ -8,12 +8,13 @@ automatic fallback.
 
 ### What it does
 - Matches LoRAs by keywords from `master_lora_dict.json`
-- Optionally summarizes long prompts using DeepSeek V3 via Together
-- Tries providers in this order:
+- Optionally summarizes long prompts with the helper LLM (NanoGPT; Together as fallback)
+- Tries providers in IMAGE_PROVIDER_ORDER (default):
   1. Runware
-  2. Wavespeed
-  3. FAL
-  4. Together
+  2. Replicate (Flux multi-LoRA)
+  Wavespeed, FAL and Together are deprecated and off by default.
+- Media Studio (the extension in `silly-tavern-pluggin/`) adds chat photos and
+  videos. See "MEDIA STUDIO" in README.md
 
 ---
 
@@ -40,12 +41,12 @@ Edit `.env` and set at least one provider key.
 ```bash
 BRIDGE_PORT=7861
 RUNWARE_API_KEY=your_runware_key
-TOGETHER_API_KEY=your_together_key
+HELPER_API_KEY=your_nanogpt_key      # helper LLM: summaries, media director, voice tags
 ENABLE_SUMMARIZATION=true
 ```
 
-> If you do not use Runware, set credentials for one of the fallback providers
-> (`WAVESPEED_API_KEY`, `FAL_API_KEY`, `TOGETHER_API_KEY`).
+> If you do not use Runware, set `REPLICATE_API_TOKEN` for the Replicate fallback.
+> Video keys (`NANOGPT_API_KEY`, `SOGNI_API_KEY`, ...) are listed in `env.example`.
 
 ---
 

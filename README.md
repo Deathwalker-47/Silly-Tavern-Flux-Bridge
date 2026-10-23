@@ -6,15 +6,19 @@ This repository provides a FastAPI bridge that exposes an AUTOMATIC1111-style
 `/sdapi/v1/txt2img` endpoint for SillyTavern and routes image generation to
 multiple Flux LoRA providers with fallback.
 
-Current provider order in code:
+Image provider order (IMAGE_PROVIDER_ORDER in .env):
 1) Runware (primary)
-2) Wavespeed
-3) FAL
-4) Together
+2) Replicate (Flux multi-LoRA backup)
+Wavespeed, FAL and Together are deprecated: their code is kept but they are not
+in the default order.
 
 It also includes:
+- Media Studio: a SillyTavern extension (in `silly-tavern-pluggin/`) where
+  characters send photos and videos in chat. Video runs on Runware, NanoGPT,
+  Sogni or Replicate; a helper LLM decides when to send what
+- A helper LLM (NanoGPT, OpenAI-compatible) for the media director, prompt
+  summarization and TavernVoice's voice tags
 - Keyword-based LoRA matching from `master_lora_dict.json`
-- Optional DeepSeek V3 prompt summarization via Together API
 - FLUX.1 Kontext instruction-based image editing (`POST /edit`, browser UI at `/edit-ui`)
 - Stub OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`) for future proxy use
 
@@ -72,6 +76,15 @@ API ENDPOINTS
 - GET  /immich/assets/{id}/thumbnail   thumbnail proxy
 - GET  /immich/assets/{id}/original    original-file proxy
 - GET  /images/{id}              serves generated images by id
+- GET  /media/capabilities       Media Studio menus: providers, models, helper
+- POST /media/image              image for a chat message (LoRA or avatar mode)
+- POST /media/lora-status        which characters have a LoRA
+- POST /video/generate           start a video job (returns job_id)
+- GET  /video/jobs/{id}          job progress; video_path when done
+- GET  /videos/{id}              serves finished videos (MP4, streams with Range)
+- POST /helper/decide            media director: should the character send something?
+- POST /helper/voice-tags        Grok speech tags for TavernVoice
+- GET  /helper/models            helper model list (for the model menus)
 - POST /v1/images/generations    OpenAI-compatible image generation
 - POST /v1/chat/completions      (stub, returns 501 — no proxy configured)
 - GET  /v1/models                (stub, returns empty list)
@@ -186,7 +199,11 @@ Notes:
 FILES
 --------------------------------------------------------------------------------
 
-- flux_lora_bridge.py
+- flux_lora_bridge.py        the FastAPI app
+- media_studio.py            video providers and catalog, video jobs, helper LLM
+- silly-tavern-pluggin/      Media Studio, the SillyTavern extension
+- dev/                       local mocks, for testing without spending credits
+- tests/                     unit tests (python -m pytest tests)
 - master_lora_dict.json
 - requirements.txt
 - env.example
@@ -200,23 +217,80 @@ NEXT
 Read `SILLYTAVERN_INTEGRATION.md` for full setup and troubleshooting.
 
 --------------------------------------------------------------------------------
-SILLYTAVERN PLUGIN (AUTO IMAGE UNIVERSAL)
+MEDIA STUDIO (SILLYTAVERN EXTENSION)
 --------------------------------------------------------------------------------
 
-A ready-to-use plugin is included under `silly-tavern-pluggin/` in this repo.
-To install it into SillyTavern, copy the files into:
+Characters send photos and short videos in chat. The helper LLM decides when to
+send something (or images come every turn), every message gets a video button,
+and each character has a gallery with up to 5 avatar images. Characters without
+a LoRA get images from their avatars (Kontext) or plain txt2img.
 
-`public/scripts/extensions/auto-image-universal/`
-
-Example:
+Install: copy `silly-tavern-pluggin/` into your SillyTavern user's extension
+folder (any folder name works), then reload SillyTavern:
 
 ```bash
-mkdir -p /path/to/SillyTavern/public/scripts/extensions/auto-image-universal
-cp -r silly-tavern-pluggin/* /path/to/SillyTavern/public/scripts/extensions/auto-image-universal/
+cp -r silly-tavern-pluggin /path/to/SillyTavern/data/default-user/extensions/MediaStudio
 ```
 
-Important:
-- Set your OpenRouter key via runtime config (do NOT hardcode keys in plugin files).
-- The plugin uses bridge endpoint `http://localhost:7861/sdapi/v1/txt2img` by default.
-- Configure runtime overrides by setting `window.AUTO_IMAGE_UNIVERSAL_CONFIG` or
-  `localStorage.autoImageUniversalConfig` in the browser.
+To update, `git pull` here and copy it again.
+
+Then open Extensions -> Media Studio (Flux Bridge):
+- Bridge URL: the bridge's address as your browser sees it (empty = the SD
+  WebUI URL from Image Generation)
+- Bridge token: the EDIT_API_TOKEN value, if set
+- Video: provider, model, variant, duration and resolution. "Sogni queue"
+  (Sogni only) picks fast (billed) or relaxed (free, can queue for an hour or
+  more); empty uses SOGNI_NETWORK
+- Helper LLM: the media director's model (empty = HELPER_MODEL)
+
+Keys live only in the bridge's .env, never in the extension. Missing keys just
+hide that provider:
+
+  Runware    RUNWARE_API_KEY      LTX-2.5 Fast, Wan 2.7, Seedance 1.5 / 2.0, MiniMax H3
+  NanoGPT    NANOGPT_API_KEY      LTX-2.3, Wan 2.2 / 2.7, Seedance 1.5 / 2.0, MiniMax H3
+                                  ("Spicy" variants first)
+  Sogni      SOGNI_API_KEY        LTX-2.3 10Eros, Wan 2.2, Seedance 2.0, MiniMax H3
+                                  (H3 gets the VBVR LoRA, SOGNI_H3_LORA)
+  Replicate  REPLICATE_API_TOKEN  LTX-2.3 Fast, Wan 2.2 / 2.7, Seedance 1.5 / 2.0, MiniMax H3
+  Helper     HELPER_API_KEY       any NanoGPT chat model (HELPER_MODEL)
+
+Safety checkers are switched off wherever a provider has a switch. Runware no
+longer offers LTX-2.3: every LTX-2.3 job failed there with a bare
+"inferenceError" (Oct 2026). Use NanoGPT, Sogni or Replicate for LTX-2.3.
+
+TavernVoice (https://github.com/Deathwalker-47/TavernVoice) uses the same
+bridge for its "voice director" (POST /helper/voice-tags).
+
+--------------------------------------------------------------------------------
+BRIDGE ON A REMOTE SERVER (SILLYTAVERN OVER HTTPS)
+--------------------------------------------------------------------------------
+
+When SillyTavern is served over HTTPS (on a VPS, for example), the browser
+blocks calls from that page to a plain http:// bridge. Give the bridge its own
+HTTPS address, for example with Caddy next to SillyTavern:
+
+  bridge.example.com {
+      reverse_proxy localhost:7861
+  }
+
+Then:
+- Set EDIT_API_TOKEN. Endpoints that spend credits (images, video, helper,
+  edits) require it, and anyone can reach a public bridge. Paste the same
+  token into Media Studio and TavernVoice.
+- Set PUBLIC_BASE_URL to that HTTPS address, so image URLs resolve.
+- Videos stay on the bridge for VIDEO_STORE_TTL seconds. Media Studio
+  downloads each finished video and saves it in SillyTavern's own files, so
+  chat playback on a phone or PC is served by SillyTavern.
+- Keep it running as a service (systemd, pm2 or screen):
+    pip install -r requirements.txt     # includes sogni-client
+    python flux_lora_bridge.py
+
+--------------------------------------------------------------------------------
+TESTING WITHOUT SPENDING CREDITS
+--------------------------------------------------------------------------------
+
+  python dev/mock_providers.py     # terminal 1: fake Runware and helper LLM
+  python dev/run_local.py          # terminal 2: bridge on :7861 using the mocks
+
+The "mock" video provider returns a bundled 2 s clip. Unit tests:
+  python -m pytest tests

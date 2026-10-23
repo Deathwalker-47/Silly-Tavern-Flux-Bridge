@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge that exposes an AUTOMATIC1111-compatible `/sdapi/v1/txt2img` endpoint. It routes image generation requests through a cascading chain of Flux LoRA providers (Runware → Wavespeed → FAL → Together AI) with automatic fallback. Includes a SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`.
+Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge that exposes an AUTOMATIC1111-compatible `/sdapi/v1/txt2img` endpoint. It routes image generation requests through a cascading chain of Flux LoRA providers (Runware → Replicate by default; Wavespeed, FAL and Together AI are deprecated but kept) with automatic fallback. Includes a SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`.
 
 ## Quick Commands
 
@@ -34,14 +34,21 @@ python -m pytest tests/test_provider_response_parsing.py -v
 ## Architecture
 
 ### Provider Chain (fallback order)
+Set by `IMAGE_PROVIDER_ORDER` (default `runware,replicate`):
 1. **Runware** (primary, up to 12 LoRAs)
-2. **Wavespeed** (up to 4 LoRAs)
-3. **FAL** (up to 3 LoRAs)
-4. **Together AI** (up to 2 LoRAs)
+2. **Replicate** (`lucataco/flux-dev-multi-lora`, up to MAXLORAS_REPLICATE)
+Deprecated, off by default: **Wavespeed** (4), **FAL** (3), **Together AI** (2).
+
+### Media Studio (`media_studio.py` + `silly-tavern-pluggin/`)
+- `VIDEO_CATALOG`: provider → family → variants (first = default). A model a provider lacks is just absent
+- Video providers: `RunwareVideo`, `NanoGPTVideo`, `SogniVideo` (official SDK), `ReplicateVideo`, `MockVideo`
+- `VideoJobs` + in-memory `VideoStore`: async jobs, finished clips served at `/videos/{id}`
+- `HelperLLM`: NanoGPT chat (Together fallback) for the media director, prompt summaries and TavernVoice voice tags
+- Safety checkers are disabled wherever a provider offers the switch
 
 ### Key Classes (all in `flux_lora_bridge.py`)
 - `Config` — Loads settings from environment variables
-- `DeepSeekSummarizer` — Optional prompt summarization via Together AI
+- `DeepSeekSummarizer` — Optional prompt summarization (now through the helper LLM)
 - `LoRAManager` — Keyword-based LoRA matching and role-cap filtering
 - `ProviderClient` (abstract) — Base class for all providers
 - Concrete providers: `RunwareClient`, `WavespeedClient`, `FALClient`, `TogetherAIClient`

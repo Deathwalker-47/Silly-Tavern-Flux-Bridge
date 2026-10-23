@@ -174,13 +174,6 @@ class ProviderResponseParsingTests(unittest.IsolatedAsyncioTestCase):
         image = await client.generate("p", "", [], {"steps": 1, "cfg_scale": 1, "width": 512, "height": 512})
         self.assertEqual(image, b"runware")
 
-    async def test_pixeldojo_nested_result(self):
-        FakeAsyncClient.set_route("POST", bridge.Config.PIXELDOJO_ENDPOINT, FakeResponse(200, {"result": {"image_url": "http://img/pd.jpg"}}))
-        FakeAsyncClient.set_route("GET", "http://img/pd.jpg", FakeResponse(200, content=b"pixeldojo"))
-        client = bridge.PixelDojoClient("pk")
-        image = await client.generate("p", "", [], {"steps": 1, "cfg_scale": 1, "width": 512, "height": 512})
-        self.assertEqual(image, b"pixeldojo")
-
     async def test_wavespeed_outputs_top_level(self):
         bridge.Config.WAVESPEED_API_KEY = "wk"
         FakeAsyncClient.set_route("POST", bridge.Config.WAVESPEED_ENDPOINT, FakeResponse(200, {"outputs": ["http://img/wave.jpg"]}))
@@ -208,19 +201,6 @@ class ProviderResponseParsingTests(unittest.IsolatedAsyncioTestCase):
         client.client = FakeTogether()
         image = await client.generate("p", "", [], {"steps": 1, "cfg_scale": 1, "width": 512, "height": 512})
         self.assertEqual(image, b"together")
-
-    async def test_hf_dict_base64(self):
-        payload = base64.b64encode(b"hf").decode("utf-8")
-
-        class FakeGradio:
-            @staticmethod
-            def predict(**kwargs):
-                return {"data": [{"b64_json": payload}]}
-
-        client = bridge.HFZeroGPUClient.__new__(bridge.HFZeroGPUClient)
-        client.client = FakeGradio()
-        image = await client.generate("p", "", [], {"steps": 1, "cfg_scale": 1, "width": 512, "height": 512, "seed": 1})
-        self.assertEqual(image, b"hf")
 
 
 if __name__ == "__main__":
