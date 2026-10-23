@@ -6,15 +6,15 @@ This repository provides a FastAPI bridge that exposes an AUTOMATIC1111-style
 `/sdapi/v1/txt2img` endpoint for SillyTavern and routes image generation to
 multiple Flux LoRA providers with fallback.
 
-Current provider order in code:
+Image provider order (IMAGE_PROVIDER_ORDER):
 1) Runware (primary)
-2) Wavespeed
-3) FAL
-4) Together
+2) Replicate (Flux multi-LoRA backup)
+Wavespeed, FAL and Together are deprecated (code kept, off by default).
 
 It also includes:
 - Keyword-based LoRA matching from `master_lora_dict.json`
-- Optional DeepSeek V3 prompt summarization via Together API
+- Optional prompt summarization via the helper LLM (NanoGPT; Together fallback)
+- Media Studio: chat photos and videos for SillyTavern (see README.md)
 - Stub OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`) for future proxy use
 
 --------------------------------------------------------------------------------

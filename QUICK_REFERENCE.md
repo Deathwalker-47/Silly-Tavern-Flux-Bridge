@@ -43,16 +43,17 @@ Browser UI for editing (works on a phone): `http://localhost:7861/edit-ui`
 ## 4) Provider Order (fallback chain)
 
 1. Runware
-2. Wavespeed
-3. FAL
-4. Together
+2. Replicate
+
+(Set by `IMAGE_PROVIDER_ORDER`. Wavespeed, FAL and Together are deprecated and off by default.)
 
 ## 5) Environment Variables You’ll Usually Set
 
 - `RUNWARE_API_KEY`
-- `WAVESPEED_API_KEY`
-- `FAL_API_KEY`
-- `TOGETHER_API_KEY`
+- `REPLICATE_API_TOKEN`
+- `HELPER_API_KEY`, `HELPER_MODEL` (helper LLM via NanoGPT)
+- `NANOGPT_API_KEY`, `SOGNI_API_KEY`, `SOGNI_NETWORK` (video)
+- `EDIT_API_TOKEN` (required once the bridge is public)
 - `ENABLE_SUMMARIZATION`
 - `KONTEXT_MODEL` (image editing: `bfl:3@1` pro, `bfl:4@1` max, `runware:106@1` dev)
 
