@@ -19,18 +19,6 @@
     "runware_id": "deathwalker:5f422566474f@1",
     "uploaded_at": "2026-01-03T01:23:50.850740"
   },
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sara_ali_khan(Sara%20ali%20khan).safetensors": {
-    "runware_id": "deathwalker:46accb271442@1",
-    "uploaded_at": "2026-01-03T01:36:12.293175"
-  },
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Shraddha_Kapoor(Shraddha%20Kapoor).safetensors": {
-    "runware_id": "deathwalker:d97b3bd965ee@1",
-    "uploaded_at": "2026-01-03T01:42:08.588958"
-  },
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Nazriya_nazim(nazriya%20nazim).safetensors": {
-    "runware_id": "deathwalker:55d457da3a47@1",
-    "uploaded_at": "2026-01-03T01:43:08.727985"
-  },
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mahira(CurvyCuteIndianFlux).safetensors": {
     "runware_id": "deathwalker:9fcd695c6466@1",
     "uploaded_at": "2026-01-03T01:43:09.182969"
@@ -46,10 +34,6 @@
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Dynamic_Poses(dynamic%20pose).safetensors": {
     "runware_id": "deathwalker:83da1f33f5f4@1",
     "uploaded_at": "2026-01-03T03:56:25.739960"
-  },
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Aishwarya_Rai(ashflx).safetensors": {
-    "runware_id": "deathwalker:44672845d154@1",
-    "uploaded_at": "2026-01-03T04:24:22.052326"
   },
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_helper(what).safetensors": {
     "runware_id": "deathwalker:087360bb647f@1",

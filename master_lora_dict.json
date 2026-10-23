@@ -742,26 +742,6 @@
       "notes": "Alternative nimya character - rarely used",
       "permanent": false
     },
-    "priyanka_mohan": {
-      "name": "Priyanka Arul Mohan",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/priyanka_arul_mohan(priya%20mohan).safetensors",
-      "weight": 1.2,
-      "rank": 101,
-      "category": "character",
-      "trigger_words": [
-        "priya mohan"
-      ],
-      "keywords": [
-        "priyanka",
-        "priya mohan",
-        "priyanka mohan"
-      ],
-      "prepend_prompt": "priya mohan",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress character",
-      "permanent": false
-    },
     "aunty_nikita": {
       "name": "Aunty Nikita",
       "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/indian_aunty_nikita(indian%20beautiful%20aunty).safetensors",
@@ -781,137 +761,6 @@
       "append_prompt": "",
       "negative_prompt": "",
       "notes": "",
-      "permanent": false
-    },
-    "hansika": {
-      "name": "Hansika Motwani",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/hansika%20_motwani(hansika%20motwani).safetensors",
-      "weight": 1,
-      "rank": 103,
-      "category": "character",
-      "trigger_words": [
-        "hansika motwani"
-      ],
-      "keywords": [
-        "hansika",
-        "motwani"
-      ],
-      "prepend_prompt": "hansika motwani",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
-      "permanent": false
-    },
-    "shriya": {
-      "name": "Shriya Saran",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Shriya_Saran(Shriya%20saran).safetensors",
-      "weight": 1.2,
-      "rank": 104,
-      "category": "character",
-      "trigger_words": [
-        "Shriya saran"
-      ],
-      "keywords": [
-        "shriya",
-        "Shriya saran"
-      ],
-      "prepend_prompt": "Shriya saran",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
-      "permanent": false
-    },
-    "shraddha": {
-      "name": "Shraddha Kapoor",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Shraddha_Kapoor(Shraddha%20Kapoor).safetensors",
-      "weight": 1,
-      "rank": 105,
-      "category": "character",
-      "trigger_words": [
-        "Shraddha Kapoor"
-      ],
-      "keywords": [
-        "shraddha"
-      ],
-      "prepend_prompt": "Shraddha Kapoor",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
-      "permanent": false
-    },
-    "sara_ali": {
-      "name": "Sara Ali Khan",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sara_ali_khan(Sara%20ali%20khan).safetensors",
-      "weight": 1.2,
-      "rank": 106,
-      "category": "character",
-      "trigger_words": [
-        "Sara ali khan"
-      ],
-      "keywords": [
-        "sara",
-        "sara ali"
-      ],
-      "prepend_prompt": "Sara ali khan",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Weight range 1.0-1.4",
-      "permanent": false
-    },
-    "sai_pallavi": {
-      "name": "Sai Pallavi",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sai_pallavi(Sai%20pallavi).safetensors",
-      "weight": 1.2,
-      "rank": 107,
-      "category": "character",
-      "trigger_words": [
-        "Sai pallavi"
-      ],
-      "keywords": [
-        "sai pallavi",
-        "sai"
-      ],
-      "prepend_prompt": "Sai pallavi",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
-      "permanent": false
-    },
-    "nazriya": {
-      "name": "Nazriya Nazim",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Nazriya_nazim(nazriya%20nazim).safetensors",
-      "weight": 1.4,
-      "rank": 108,
-      "category": "character",
-      "trigger_words": [
-        "nazriya nazim"
-      ],
-      "keywords": [
-        "nazriya",
-        "naz"
-      ],
-      "prepend_prompt": "nazriya nazim",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
-      "permanent": false
-    },
-    "keerthi": {
-      "name": "Keerthi Suresh",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Keerthi_Suresh(Keerthi%20Suresh).safetensors",
-      "weight": 1.1,
-      "rank": 109,
-      "category": "character",
-      "trigger_words": [
-        "Keerthi Suresh"
-      ],
-      "keywords": [
-        "keerthi"
-      ],
-      "prepend_prompt": "Keerthi Suresh",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
       "permanent": false
     },
     "kavya": {
@@ -984,24 +833,6 @@
       "append_prompt": "",
       "negative_prompt": "",
       "notes": "",
-      "permanent": false
-    },
-    "alia": {
-      "name": "Alia Bhatt",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Alia_bhatt(Alia%20bhatt).safetensors",
-      "weight": 0.9,
-      "rank": 114,
-      "category": "character",
-      "trigger_words": [
-        "Alia bhatt"
-      ],
-      "keywords": [
-        "alia bhatt"
-      ],
-      "prepend_prompt": "Alia bhatt",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "Actress",
       "permanent": false
     },
     "random_women": {
@@ -1176,25 +1007,6 @@
       "notes": "",
       "permanent": false
     },
-    "aishwarya_rai": {
-      "name": "Aishwarya Rai",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Aishwarya_Rai(ashflx).safetensors",
-      "weight": 0.9,
-      "rank": 116,
-      "category": "character",
-      "trigger_words": [
-        "ashflx"
-      ],
-      "keywords": [
-        "aishwarya",
-        "ash"
-      ],
-      "prepend_prompt": "ashflx",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "",
-      "permanent": false
-    },
     "akshara": {
       "name": "Akshara",
       "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Akshara(south-indian-girl-v2).safetensors",
@@ -1288,24 +1100,6 @@
       "notes": "",
       "permanent": false
     },
-    "kiara": {
-      "name": "Kiara Advani",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kiara(Kiara%20advani).safetensors",
-      "weight": 0.8,
-      "rank": 122,
-      "category": "character",
-      "trigger_words": [
-        "Kiara advani"
-      ],
-      "keywords": [
-        "kiara"
-      ],
-      "prepend_prompt": "Kiara advani",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "",
-      "permanent": false
-    },
     "mohini": {
       "name": "Mohini",
       "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mohini.safetensors",
@@ -1353,24 +1147,6 @@
         "swathi"
       ],
       "prepend_prompt": "sawali1",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "",
-      "permanent": false
-    },
-    "taylor_swift": {
-      "name": "Taylor Swift",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Taylor_Swift(Taylor%20Swift).safetensors",
-      "weight": 0.8,
-      "rank": 126,
-      "category": "character",
-      "trigger_words": [
-        "Taylor Swift"
-      ],
-      "keywords": [
-        "taylor"
-      ],
-      "prepend_prompt": "Taylor Swift",
       "append_prompt": "",
       "negative_prompt": "",
       "notes": "",
