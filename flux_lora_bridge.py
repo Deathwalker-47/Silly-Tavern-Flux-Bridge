@@ -224,6 +224,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+import media_studio as ms  # video providers + helper LLM (see media_studio.py)
+
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -334,7 +336,23 @@ class Config:
     FAL_API_KEY = os.getenv("FAL_API_KEY", "")
     FAL_ENDPOINT = "https://queue.fal.run/fal-ai/flux-lora"
 
-    # DeepSeek V3 Summarization (Together AI)
+    # ---- txt2img provider chain ----
+    # Tried in this order. FAL, Together and Wavespeed are deprecated: their clients
+    # stay in the code but only run when listed here explicitly.
+    IMAGE_PROVIDER_ORDER = [p.strip().lower() for p in os.getenv("IMAGE_PROVIDER_ORDER", "runware,replicate").split(",") if p.strip()]
+
+    # Replicate (Flux backup). flux-dev-multi-lora loads LoRAs straight from HuggingFace URLs.
+    REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
+    REPLICATE_FLUX_MODEL = os.getenv("REPLICATE_FLUX_MODEL", "lucataco/flux-dev-multi-lora")
+    MAXLORAS_REPLICATE = int(os.getenv("MAXLORAS_REPLICATE", 6))
+
+    # ---- Media Studio: character images from avatars (no LoRA) ----
+    # Separate from KONTEXT_MODEL, which the Immich editor uses. Kontext [dev] is open
+    # weights, so there is no hosted-model content filter in front of it.
+    AVATAR_KONTEXT_MODEL = os.getenv("AVATAR_KONTEXT_MODEL", "runware:106@1")
+
+    # DeepSeek V3 Summarization: runs on the helper LLM (NanoGPT) when configured,
+    # Together AI is only the legacy fallback. See media_studio.HelperLLM.backend().
     TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
     DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V3"
     ENABLE_SUMMARIZATION = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
@@ -381,11 +399,20 @@ class Config:
         logger.info(f"  Estimated Delay: 1-3 seconds per request")
         logger.info("")
         logger.info("PROVIDER STATUS:")
+        logger.info(f"  Image chain order: {' → '.join(cls.IMAGE_PROVIDER_ORDER)}")
         logger.info(f"  {'✅' if cls.RUNWARE_API_KEY else '❌'} Runware (PRIMARY) - {'CONFIGURED' if cls.RUNWARE_API_KEY else 'NOT SET'}")
-        logger.info(f"  {'✅' if cls.WAVESPEED_API_KEY else '❌'} Wavespeed (FALLBACK) - {'CONFIGURED' if cls.WAVESPEED_API_KEY else 'NOT SET'}")
-        logger.info(f"  {'✅' if cls.FAL_API_KEY else '❌'} FAL (FALLBACK) - {'CONFIGURED' if cls.FAL_API_KEY else 'NOT SET'}")
-        logger.info(f"  {'✅' if cls.TOGETHER_API_KEY else '❌'} Together (FALLBACK) - {'CONFIGURED' if cls.TOGETHER_API_KEY else 'NOT SET'}")
-        logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION else '❌'} DeepSeek V3 Summarization - {'ACTIVE' if cls.ENABLE_SUMMARIZATION else 'DISABLED'}")
+        logger.info(f"  {'✅' if cls.REPLICATE_API_TOKEN else '❌'} Replicate (Flux backup: {cls.REPLICATE_FLUX_MODEL}) - {'CONFIGURED' if cls.REPLICATE_API_TOKEN else 'NOT SET'}")
+        logger.info(f"  ⚠️  Wavespeed / FAL / Together image clients are deprecated (only used if listed in IMAGE_PROVIDER_ORDER)")
+        helper_url, _key, helper_model, helper_label = ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)
+        logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION and helper_label != 'none' else '❌'} Prompt summarization - {helper_label}/{helper_model or 'n/a'}")
+        logger.info("")
+        logger.info("MEDIA STUDIO:")
+        for provider in ("runware", "nanogpt", "sogni", "replicate", "mock"):
+            if provider == "mock" and not ms.MediaConfig.VIDEO_MOCK_PROVIDER:
+                continue
+            logger.info(f"  {'✅' if ms.provider_configured(provider) else '❌'} Video: {ms.PROVIDER_LABELS[provider]}")
+        logger.info(f"  {'✅' if ms.helper.configured else '❌'} Helper LLM: {ms.helper.backend()[3]}/{ms.helper.backend()[2] or 'n/a'}")
+        logger.info(f"  Avatar images (no LoRA): Kontext {cls.AVATAR_KONTEXT_MODEL}")
         logger.info("")
         logger.info("FLUX KONTEXT IMAGE EDIT (POST /edit):")
         logger.info(f"  Model: {cls.KONTEXT_MODEL} | steps: {cls.KONTEXT_STEPS} | CFG: {cls.KONTEXT_CFG} | timeout: {cls.KONTEXT_TIMEOUT}s")
@@ -471,10 +498,12 @@ class DeepSeekSummarizer:
     async def summarize_prompt(self, prompt: str, maxlength: int = 300, required_names: list = None) -> str:
         """Extract visual prompt from narrative, preserving explicit content and multi-char positions"""
         
-        if not self.apikey:
-            logger.warning("⚠️  No Together API key, using original prompt")
+        # Helper LLM (NanoGPT) when configured; Together AI is the legacy fallback.
+        llm_url, llm_key, llm_model, llm_backend = ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)
+        if not llm_key:
+            logger.warning("⚠️  No helper LLM or Together API key, using original prompt")
             return prompt
-        
+
         starttime = time.time()
         logger.info(f"🤖 [DeepSeek V3] Starting summarization of {len(prompt.split())} words")
         logger.info(f"🤖 [DeepSeek V3] Input prompt: {prompt[:200]}..." if len(prompt) > 200 else f"🤖 [DeepSeek V3] Input prompt: {prompt}")
@@ -510,7 +539,7 @@ Output ONLY the visual prompt. No explanations. {name_rule}"""
         user_message = f"Extract visual prompt in {maxlength} words max:\n\n{prompt}"
         
         payload = {
-            "model": self.model,
+            "model": llm_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -519,17 +548,17 @@ Output ONLY the visual prompt. No explanations. {name_rule}"""
             "temperature": 0.2,
             "top_p": 0.85
         }
-        
+
         headers = {
-            "Authorization": f"Bearer {self.apikey}",
+            "Authorization": f"Bearer {llm_key}",
             "Content-Type": "application/json"
         }
-        
+
         try:
-            logger.info(f"🤖 [DeepSeek V3] Sending to Together AI API...")
+            logger.info(f"🤖 [DeepSeek V3] Sending to {llm_backend} ({llm_model})...")
             api_start = time.time()
             async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(self.baseurl, json=payload, headers=headers)
+                response = await client.post(llm_url, json=payload, headers=headers)
             api_elapsed = time.time() - api_start
             
             if response.status_code != 200:
@@ -561,7 +590,8 @@ class ProviderState:
     """Manages provider selection - tries all in order"""
     
     def __init__(self):
-        self.providers = ["runware", "wavespeed", "fal", "together"]
+        known = ("runware", "replicate", "wavespeed", "fal", "together")
+        self.providers = [p for p in Config.IMAGE_PROVIDER_ORDER if p in known] or ["runware"]
         logger.info(f"📊 [Provider] Order: {', '.join(self.providers)}")
     
     def get_provider_list(self) -> List[str]:
@@ -573,6 +603,9 @@ class ProviderState:
         if provider == "runware":
             logger.info(f"📊 [LoRA Limit] Runware max: {Config.MAXLORAS_RUNWARE}")
             return Config.MAXLORAS_RUNWARE
+        elif provider == "replicate":
+            logger.info(f"📊 [LoRA Limit] Replicate max: {Config.MAXLORAS_REPLICATE}")
+            return Config.MAXLORAS_REPLICATE
         elif provider == "wavespeed":
             logger.info(f"📊 [LoRA Limit] Wavespeed max: {Config.MAXLORAS_WAVESPEED}")
             return Config.MAXLORAS_WAVESPEED
@@ -1521,7 +1554,10 @@ class RunwareClient(ProviderClient):
 # ============================================================================
 
 class WavespeedClient(ProviderClient):
-    """Wavespeed API client - $0.015 per image, 4 LoRAs max"""
+    """Wavespeed API client - $0.015 per image, 4 LoRAs max
+
+    DEPRECATED: not in the default IMAGE_PROVIDER_ORDER (Wavespeed's Sept 2026 AUP
+    bans explicit content). Kept so it can be re-enabled via the env var."""
     
     async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
         if not Config.WAVESPEED_API_KEY:
@@ -1558,7 +1594,8 @@ class WavespeedClient(ProviderClient):
             "guidance_scale": params.get('cfg_scale', 3.5),
             "width": params.get('width', 1024),
             "height": params.get('height', 1024),
-            "seed": params.get('seed', -1)
+            "seed": params.get('seed', -1),
+            "enable_safety_checker": False,
         }
         
         try:
@@ -1627,7 +1664,9 @@ class WavespeedClient(ProviderClient):
 # ============================================================================
 
 class FALClient(ProviderClient):
-    """FAL.ai client using synchronous API for fal-ai/flux-lora"""
+    """FAL.ai client using synchronous API for fal-ai/flux-lora
+
+    DEPRECATED: not in the default IMAGE_PROVIDER_ORDER. Kept for re-enabling."""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -1750,7 +1789,9 @@ class FALClient(ProviderClient):
 # ============================================================================
 
 class TogetherAIClient(ProviderClient):
-    """Together AI client using official SDK"""
+    """Together AI client using official SDK
+
+    DEPRECATED: not in the default IMAGE_PROVIDER_ORDER. Kept for re-enabling."""
     
     def __init__(self):
         self.client = None
@@ -1849,6 +1890,66 @@ class TogetherAIClient(ProviderClient):
             raise
 
 
+
+
+# ============================================================================
+# REPLICATE CLIENT (Flux backup)
+# ============================================================================
+
+class ReplicateClient(ProviderClient):
+    """Replicate Flux backup: lucataco/flux-dev-multi-lora.
+
+    The model loads LoRAs straight from HuggingFace URLs, which is where every
+    master_lora_dict.json LoRA lives, so no upload/mapping step is needed.
+    """
+    API = "https://api.replicate.com/v1"
+    ASPECTS = ["1:1", "16:9", "21:9", "3:2", "2:3", "4:5", "5:4", "3:4", "4:3", "9:16", "9:21"]
+
+    def __init__(self, api_token: str):
+        self.api_token = api_token
+        logger.info(f"🔁 [Replicate] Client initialized - model: {Config.REPLICATE_FLUX_MODEL} | token configured: {bool(api_token)}")
+
+    def build_input(self, prompt: str, loras: List[Dict], params: Dict) -> Dict:
+        urls = [l.get("url") for l in loras if l.get("url")]
+        scales = [float(l.get("weight", 1.0)) for l in loras if l.get("url")]
+        inp = {
+            "prompt": prompt,
+            "aspect_ratio": ms.closest_ratio(params.get("width", 1024), params.get("height", 1024), self.ASPECTS),
+            "num_outputs": 1,
+            "num_inference_steps": max(1, min(50, int(params.get("steps", 28)))),
+            "guidance_scale": float(params.get("cfg_scale", 3.5)),
+            "output_format": "jpg",
+            "output_quality": 95,
+            "disable_safety_checker": True,
+        }
+        if urls:
+            inp["hf_loras"] = urls
+            inp["lora_scales"] = scales
+        seed = params.get("seed")
+        if isinstance(seed, int) and seed >= 0:
+            inp["seed"] = seed
+        return inp
+
+    async def generate(self, prompt: str, negative_prompt: str, loras: List[Dict], params: Dict) -> bytes:
+        if not self.api_token:
+            raise ValueError("REPLICATE_API_TOKEN not configured")
+        # Flux dev has no negative prompt input; the negative is dropped like on Runware's guidance-only models.
+        body = {"input": self.build_input(prompt, loras, params)}
+        headers = {"Authorization": f"Bearer {self.api_token}"}
+        logger.info(f"🔁 [Replicate] Generating with {len(body['input'].get('hf_loras', []))} LoRAs, "
+                    f"aspect {body['input']['aspect_ratio']}, steps {body['input']['num_inference_steps']}")
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{self.API}/models/{Config.REPLICATE_FLUX_MODEL}/predictions",
+                json=body,
+                headers={**headers, "Content-Type": "application/json", "Prefer": "wait=60"},
+            )
+        if response.status_code >= 300:
+            raise Exception(f"Replicate API error {response.status_code}: {response.text[:300]}")
+        output_url = await ms.replicate_wait(response.json(), headers, timeout=240)
+        image_bytes = await ms.download(output_url)
+        logger.info(f"✅ [Replicate] Image resolved ({len(image_bytes)} bytes)")
+        return image_bytes
 
 
 # ============================================
@@ -1971,12 +2072,13 @@ class MultiCharPipeline:
     # ── Internal helpers ──────────────────────────────────────────────────
 
     async def _call_deepseek(self, system_prompt: str, user_message: str, max_tokens: int = 800) -> str:
-        """Thin wrapper around Together AI / DeepSeek for decomposition calls."""
-        if not Config.TOGETHER_API_KEY:
-            raise ValueError("TOGETHER_API_KEY not configured — cannot decompose scene")
+        """Thin wrapper around the helper LLM (Together AI as fallback) for decomposition calls."""
+        llm_url, llm_key, llm_model, _backend = ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)
+        if not llm_key:
+            raise ValueError("No helper LLM or TOGETHER_API_KEY configured — cannot decompose scene")
 
         payload = {
-            "model": Config.DEEPSEEK_MODEL,
+            "model": llm_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -1986,12 +2088,12 @@ class MultiCharPipeline:
             "top_p": 0.85,
         }
         headers = {
-            "Authorization": f"Bearer {Config.TOGETHER_API_KEY}",
+            "Authorization": f"Bearer {llm_key}",
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
-                "https://api.together.xyz/v1/chat/completions",
+                llm_url,
                 json=payload,
                 headers=headers,
             )
@@ -2319,6 +2421,7 @@ lora_manager = LoRAManager(Config.LORA_DICT_PATH)
 deepseek_summarizer = DeepSeekSummarizer(Config.TOGETHER_API_KEY)
 clients = {
     "runware": RunwareClient(Config.RUNWARE_API_KEY),
+    "replicate": ReplicateClient(Config.REPLICATE_API_TOKEN),
     "wavespeed": WavespeedClient(),
     "fal": FALClient(Config.FAL_API_KEY),
     "together": TogetherAIClient(),
@@ -2385,6 +2488,61 @@ class Txt2ImgResponse(BaseModel):
     image_urls: list[str] = Field(default_factory=list, description="Public fetchable URLs for the generated images")
     parameters: dict = Field(description="Generation parameters")
     info: str = Field(description="Generation info JSON string")
+
+
+# ---- Media Studio ----
+
+class MediaImageRequest(BaseModel):
+    prompt: str = Field(default="", description="Scene text: raw narrative or a visual prompt")
+    negative_prompt: str = Field(default="")
+    mode: str = Field(default="auto", description="auto | lora | avatar")
+    character_name: str = Field(default="")
+    character_prompts: dict = Field(default_factory=dict)
+    visible_characters: list = Field(default_factory=list)
+    avatars: list = Field(default_factory=list, description="Character avatars (data URI/URL); first = main")
+    width: int = Field(default=1024)
+    height: int = Field(default=1024)
+    steps: int = Field(default=40)
+    cfg_scale: float = Field(default=3.5)
+    seed: int = Field(default=-1)
+
+
+class LoraStatusRequest(BaseModel):
+    names: list = Field(default_factory=list)
+    character_prompts: dict = Field(default_factory=dict)
+
+
+class VideoGenerateRequest(BaseModel):
+    provider: str = Field(default="runware")
+    family: str = Field(default="ltx-2.3", description="ltx-2.3 | wan-2.2 | wan-2.7 | seedance-1.5 | seedance-2.0 | minimax-h3")
+    variant: Optional[str] = Field(default=None, description="Exact model id; default = the provider's first variant")
+    prompt: str = Field(default="", description="Motion prompt")
+    negative_prompt: str = Field(default="")
+    image: Optional[str] = Field(default=None, description="First frame (data URI, base64 or URL)")
+    last_image: Optional[str] = Field(default=None, description="Optional last frame")
+    keyframe: Optional[MediaImageRequest] = Field(default=None, description="Generate the first frame first when no image is given")
+    duration: Optional[float] = Field(default=None)
+    resolution: Optional[str] = Field(default=None)
+    seed: int = Field(default=-1)
+    audio: bool = Field(default=False)
+
+
+class HelperDecideRequest(BaseModel):
+    messages: list = Field(default_factory=list, description="[{name, is_user, text}] oldest first")
+    char: str = Field(default="")
+    user: str = Field(default="")
+    allow_image: bool = Field(default=True)
+    allow_video: bool = Field(default=True)
+    force: Optional[str] = Field(default=None, description="image | video: skip the decision, just write prompts")
+    model: Optional[str] = Field(default=None)
+
+
+class VoiceTagsRequest(BaseModel):
+    text: str = Field(default="")
+    char: str = Field(default="")
+    tag_level: str = Field(default="full", description="full | subtle | none")
+    context: str = Field(default="")
+    model: Optional[str] = Field(default=None)
 
 # ============================================
 # API ENDPOINTS
@@ -3108,6 +3266,228 @@ async def txt2img(request: Txt2ImgRequest):
     logger.error(error_msg)
     
     raise HTTPException(status_code=500, detail=error_msg)
+
+
+# ============================================
+# MEDIA STUDIO (character images, video, helper LLM)
+# ============================================
+
+def _character_has_lora(name: str, sd_prompt: str = "") -> bool:
+    """True when a character-category LoRA keyword-matches the character's name or SD prompt."""
+    if not (name or "").strip() and not (sd_prompt or "").strip():
+        return False
+    matched = lora_manager.match_loras_by_keywords(f"{name} {sd_prompt}", "")
+    return any(m.get("reason") != "permanent" and m["data"].get("category") == "character" for m in matched)
+
+
+async def _media_image(req: MediaImageRequest, req_id: str = "") -> Tuple[bytes, Dict]:
+    """One character image, choosing LoRA txt2img or avatar-based Kontext.
+
+    mode=lora   always the txt2img LoRA pipeline
+    mode=avatar Kontext from the avatars (falls back to txt2img when none were sent)
+    mode=auto   LoRA when the character has one, avatar otherwise
+    """
+    req_id = req_id or uuid.uuid4().hex[:8]
+    name = (req.character_name or "").strip()
+    sd_prompt = (req.character_prompts or {}).get(name, "") if name else ""
+    has_lora = _character_has_lora(name, sd_prompt)
+    mode = (req.mode or "auto").lower()
+    avatars = [a for a in (req.avatars or []) if isinstance(a, str) and a.strip()]
+    use_avatar = bool(avatars) and (mode == "avatar" or (mode == "auto" and not has_lora))
+    logger.info(f"🎭 [Media {req_id}] character={name or '-'} mode={mode} has_lora={has_lora} avatars={len(avatars)} -> {'avatar' if use_avatar else 'txt2img'}")
+
+    if not use_avatar:
+        result = await txt2img(Txt2ImgRequest(
+            prompt=req.prompt, negative_prompt=req.negative_prompt, steps=req.steps, cfg_scale=req.cfg_scale,
+            width=req.width, height=req.height, seed=req.seed,
+            character_prompts=req.character_prompts or {}, visible_characters=req.visible_characters or [],
+        ))
+        image_bytes = base64.b64decode(result.images[0])
+        return image_bytes, {
+            "mode": "lora" if has_lora else "text",
+            "has_lora": has_lora,
+            "image_url": (result.image_urls or [None])[0],
+            "prompt": result.parameters.get("final_prompt") or result.parameters.get("summarized_prompt"),
+        }
+
+    scene = req.prompt
+    if Config.ENABLE_SUMMARIZATION and scene:
+        scene = await deepseek_summarizer.summarize_prompt(scene, Config.SUMMARY_MAX_LENGTH, required_names=[name] if name else None)
+    who = name or "the person"
+    instruction = (
+        f"Create a new photo of {who}, the same person shown in the reference image: {scene}. "
+        f"Keep {who}'s face, hairstyle, skin tone and body exactly as in the reference image; "
+        f"change pose, clothing, expression and setting as described."
+    )
+    references, _w, _h = await _prepare_kontext_inputs(avatars[0], avatars[1] if len(avatars) > 1 else None, req_id)
+    width, height = _closest_kontext_size(req.width, req.height)
+    image_bytes = await clients["runware"].edit(
+        instruction, references, {"width": width, "height": height, "model": Config.AVATAR_KONTEXT_MODEL}
+    )
+    _validate_image_bytes(image_bytes, "AvatarKontext")
+    return image_bytes, {
+        "mode": "avatar",
+        "has_lora": has_lora,
+        "image_url": _publish_image_url(image_bytes),
+        "prompt": instruction,
+    }
+
+
+@app.get("/media/capabilities")
+async def media_capabilities():
+    """Everything the SillyTavern extension needs to build its settings menus."""
+    return JSONResponse({
+        "image": {
+            "providers": [{"id": p, "configured": bool(getattr(clients.get(p), "api_key", None) or getattr(clients.get(p), "api_token", None))}
+                          for p in provider_state.get_provider_list()],
+            "avatar_model": Config.AVATAR_KONTEXT_MODEL,
+            "modes": ["auto", "lora", "avatar"],
+        },
+        "video": ms.public_catalog(),
+        "helper": {
+            "configured": ms.helper.configured,
+            "backend": ms.helper.backend()[3],
+            "default_model": ms.helper.backend()[2],
+        },
+        "token_required": bool(Config.EDIT_API_TOKEN),
+    })
+
+
+@app.post("/media/lora-status")
+async def media_lora_status(request: LoraStatusRequest):
+    prompts = request.character_prompts or {}
+    return JSONResponse({"characters": {n: _character_has_lora(n, prompts.get(n, "")) for n in request.names or []}})
+
+
+@app.post("/media/image")
+async def media_image(request: MediaImageRequest, http_request: Request = None):
+    """Character image: LoRA txt2img or avatar-based Kontext (see _media_image)."""
+    _check_edit_token(http_request)
+    req_id = uuid.uuid4().hex[:8]
+    try:
+        image_bytes, meta = await _media_image(request, req_id)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"🎭 [Media {req_id}] FAILED: {e}")
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {e}")
+    return JSONResponse({
+        "images": [base64.b64encode(image_bytes).decode("utf-8")],
+        "image_urls": [meta["image_url"]] if meta.get("image_url") else [],
+        "mode": meta["mode"],
+        "has_lora": meta["has_lora"],
+        "parameters": meta,
+    })
+
+
+@app.post("/video/generate")
+async def video_generate(request: VideoGenerateRequest, http_request: Request = None):
+    """Start a video job and return its id; poll GET /video/jobs/{id}.
+
+    Videos take 30s to several minutes, longer than most proxies allow for a
+    single request, so this never blocks on the render.
+    """
+    _check_edit_token(http_request)
+    provider = (request.provider or "").lower()
+    if provider not in ms.PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown video provider '{request.provider}'")
+    if not ms.provider_configured(provider):
+        raise HTTPException(status_code=400, detail=f"{ms.PROVIDER_LABELS.get(provider, provider)} is not configured on the bridge")
+    try:
+        variant = ms.find_variant(provider, request.family, request.variant)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not (request.image or "").strip() and request.keyframe is None:
+        raise HTTPException(status_code=400, detail="Send an image (first frame) or a keyframe request")
+
+    prompt = (request.prompt or "").strip() or "natural subtle motion, the person breathes, blinks and shifts slightly, gentle camera push-in"
+    duration = variant.pick_duration(request.duration)
+    resolution = variant.pick_resolution(request.resolution)
+
+    async def run(job: ms.VideoJob) -> bytes:
+        report = ms.reporter(job)
+        if (request.image or "").strip():
+            raw = await _load_edit_image_bytes(request.image, "image")
+        else:
+            report("keyframe", "Generating the first frame")
+            raw, _meta = await _media_image(request.keyframe, job.id[:8])
+            job.keyframe_b64 = base64.b64encode(raw).decode("utf-8")
+            job.keyframe_generated = True
+        image, _w, _h = _normalize_edit_image(raw, "image")
+        last = None
+        if (request.last_image or "").strip() and variant.last_frame:
+            last, _w2, _h2 = _normalize_edit_image(await _load_edit_image_bytes(request.last_image, "last_image"), "last_image")
+        vreq = ms.VideoRequest(
+            provider=provider, family=request.family, variant=variant, prompt=prompt, image=image,
+            last_image=last, negative_prompt=request.negative_prompt or "", duration=duration,
+            resolution=resolution, seed=request.seed, audio=request.audio,
+        )
+        return await ms.PROVIDERS[provider].generate(vreq, report)
+
+    job = ms.video_jobs.create(provider, request.family, variant.id, run)
+    logger.info(f"🎬 [Video {job.id}] queued {provider}/{variant.id} {duration}s @ {resolution}")
+    return JSONResponse({
+        "job_id": job.id, "status": job.status, "provider": provider,
+        "variant": variant.id, "duration": duration, "resolution": resolution,
+    })
+
+
+@app.get("/video/jobs/{job_id}")
+async def video_job(job_id: str):
+    job = ms.video_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired job")
+    return JSONResponse(job.to_public())
+
+
+@app.get("/videos/{video_id}")
+async def get_video(video_id: str):
+    from fastapi.responses import Response  # imported lazily; not part of the test stubs
+    data = ms.video_store.get(video_id.rsplit(".", 1)[0])
+    if data is None:
+        raise HTTPException(status_code=404, detail="Video not found or expired")
+    return Response(content=data, media_type="video/mp4",
+                    headers={"Cache-Control": f"public, max-age={ms.MediaConfig.VIDEO_STORE_TTL}"})
+
+
+@app.post("/helper/decide")
+async def helper_decide(request: HelperDecideRequest, http_request: Request = None):
+    """Should the character send a photo or a video now? Also writes the prompts."""
+    _check_edit_token(http_request)
+    try:
+        return JSONResponse(await ms.helper.decide(
+            messages=request.messages, char=request.char, user=request.user,
+            allow_image=request.allow_image, allow_video=request.allow_video,
+            force=request.force, model=request.model,
+        ))
+    except Exception as e:
+        logger.error(f"🧠 [Helper] decide failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Helper LLM failed: {e}")
+
+
+@app.post("/helper/voice-tags")
+async def helper_voice_tags(request: VoiceTagsRequest, http_request: Request = None):
+    """Add Grok speech tags to one spoken line (TavernVoice). Words are never changed."""
+    _check_edit_token(http_request)
+    try:
+        return JSONResponse(await ms.helper.voice_tags(
+            request.text, char=request.char, tag_level=request.tag_level,
+            context=request.context, model=request.model,
+        ))
+    except Exception as e:
+        logger.warning(f"🧠 [Helper] voice-tags failed: {e}")
+        return JSONResponse({"text": request.text, "changed": False, "error": str(e)})
+
+
+@app.get("/helper/models")
+async def helper_models(refresh: bool = False):
+    return JSONResponse({
+        "default_model": ms.helper.backend()[2],
+        "backend": ms.helper.backend()[3],
+        "models": await ms.helper.models(force=refresh),
+    })
 
 
 # ============================================

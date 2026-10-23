@@ -4,6 +4,6 @@ httpx>=0.26.0
 pydantic>=2.5.3
 python-dotenv>=1.0.0
 Pillow>=10.2.0
-gradio-client>=2.0.0
 together>=2.0.0
 sse-starlette>=1.6.0
+sogni-client>=5.69.0
