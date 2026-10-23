@@ -1,13 +1,13 @@
 {
-    "display_name": "Auto Image Generator (Universal)",
+    "display_name": "Media Studio (Flux Bridge)",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Custom",
-    "version": "2.0.0",
-    "description": "Auto-generates images from AI messages using mutation observer for complete message detection. Works from empty chat.",
-    "homePage": "",
+    "author": "Deathwalker-47",
+    "version": "3.0.0",
+    "description": "Characters send photos and videos in chat (helper LLM decides, or every turn), video via Runware/NanoGPT/Sogni/Replicate, character gallery with avatars.",
+    "homePage": "https://github.com/Deathwalker-47/Silly-Tavern-Flux-Bridge",
     "auto_update": false
 }

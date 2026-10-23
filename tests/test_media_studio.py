@@ -187,7 +187,7 @@ class RunwarePayloadTests(unittest.TestCase):
         ])
         self.assertEqual(task["deliveryMethod"], "async")
         self.assertEqual(task["outputFormat"], "MP4")
-        self.assertEqual(task["safety"], {"checkContent": False})
+        self.assertNotIn("safety", task)  # opt-in on Runware; the live API rejects checkContent
         self.assertEqual(task["resolution"], "720p")
         self.assertNotIn("width", task)
 
@@ -195,9 +195,15 @@ class RunwarePayloadTests(unittest.TestCase):
     def test_ltx_uses_width_height_matching_the_keyframe_orientation(self):
         req = request("runware", "ltx-2.3", resolution="480p")
         task = ms.RunwareVideo().build_task(req, "u1", None, "t")
-        self.assertEqual((task["width"], task["height"]), (480, 832))  # portrait keyframe
+        self.assertEqual((task["width"], task["height"]), (512, 896))  # portrait keyframe
         self.assertNotIn("resolution", task)
         self.assertEqual(len(task["inputs"]["frameImages"]), 1)
+
+    def test_every_preset_size_is_a_multiple_of_64(self):
+        # Runware's real API rejected 480 px: "Video width must be ... in multiples of 64".
+        for tier, sizes in ms.WH_SIZES.items():
+            for orient, (w, h) in sizes.items():
+                self.assertEqual((w % 64, h % 64), (0, 0), f"{tier}/{orient} = {w}x{h}")
 
 
 class NanoGPTPayloadTests(unittest.TestCase):
@@ -228,6 +234,10 @@ class SogniParamTests(unittest.TestCase):
         self.assertIs(params["disableNSFWFilter"], True)
         self.assertIsInstance(params["referenceImage"], bytes)
         self.assertEqual(params["numberOfMedia"], 1)
+
+    def test_minimax_h3_duration_respects_the_24fps_floor(self):
+        # Sogni's real API: "Video duration must be between 5.1666 and 15.0833".
+        self.assertEqual(ms.find_variant("sogni", "minimax-h3").pick_duration(5), 6)
 
     def test_minimax_h3_gets_the_vbvr_lora_by_default(self):
         params = ms.SogniVideo().build_params(request("sogni", "minimax-h3"))
@@ -345,6 +355,20 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(out["text"], "Oh! You called.")
         self.assertFalse(out["changed"])
         self.assertTrue(out["rejected"])
+
+    def test_sanitizer_fixes_small_model_tag_mistakes(self):
+        inline, wrap = ms.INLINE_TAGS, ms.WRAPPING_TAGS
+        # Llama 3.1 8B really answered like this: inline tags in wrapping syntax.
+        self.assertEqual(ms.sanitize_speech_tags("Wait, <pause> seriously? <laugh> You drove here?", inline, wrap),
+                         "Wait, [pause] seriously? [laugh] You drove here?")
+        self.assertEqual(ms.sanitize_speech_tags("[whisper] hi <Whisper>quiet</Whisper> [Long Pause] <dance>x</dance>", inline, wrap),
+                         "hi <whisper>quiet</whisper> [long-pause] x")
+        self.assertEqual(ms.sanitize_speech_tags("<soft>goodnight", inline, wrap), "<soft>goodnight</soft>")
+        self.assertEqual(ms.sanitize_speech_tags("stray</slow> end", inline, wrap), "stray end")
+
+    def test_voice_tags_are_sanitized_after_the_word_check(self):
+        out = run(self.with_reply("Oh! <laugh> You called.").voice_tags("Oh! You called."))
+        self.assertEqual(out["text"], "Oh! [laugh] You called.")
 
     def test_voice_tags_level_none_skips_the_llm(self):
         out = run(self.with_reply("SHOULD NOT BE USED").voice_tags("Hi.", tag_level="none"))

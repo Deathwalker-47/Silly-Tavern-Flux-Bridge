@@ -220,15 +220,16 @@ VIDEO_CATALOG: Dict[str, Dict[str, List[VideoVariant]]] = {
             V("seedance-2-0-fast", "Seedance 2.0 Fast", ["default"], "default", dur=(4, 15), hint="premium Spark"),
             V("seedance-2-0", "Seedance 2.0", ["default"], "default", dur=(4, 15), hint="premium Spark"),
         ],
+        # Sogni renders H3 on a 24 fps grid and rejects anything under ~5.17 s, so the floor is 6.
         "minimax-h3": [
             V("minimax-h3-fastvideo-int8_i2v_turbo", "MiniMax H3 FastH3 Turbo", ["default"], "default",
-              dur=(5, 15), last=True, hint="fastest · VBVR LoRA",
+              dur=(6, 15), last=True, hint="fastest · VBVR LoRA",
               last_model="minimax-h3-fastvideo-int8_flf2v_turbo", h3_lora=True),
             V("minimax-h3-fl2va-fp8_i2v_turbo", "MiniMax H3 LightX2V Turbo", ["default"], "default",
-              dur=(5, 15), last=True, hint="fast · VBVR LoRA",
+              dur=(6, 15), last=True, hint="fast · VBVR LoRA",
               last_model="minimax-h3-fl2va-fp8_flf2v_turbo", h3_lora=True),
             V("minimax-h3-fl2va-fp8_i2v", "MiniMax H3 Standard", ["default"], "default",
-              dur=(5, 15), last=True, hint="best quality, slow · VBVR LoRA",
+              dur=(6, 15), last=True, hint="best quality, slow · VBVR LoRA",
               last_model="minimax-h3-fl2va-fp8_flf2v", h3_lora=True),
         ],
     },
@@ -316,11 +317,12 @@ def find_variant(provider: str, family: str, variant_id: Optional[str] = None) -
 # SIZING HELPERS
 # ============================================================================
 
-# width x height per resolution tier and orientation, multiples of 32 (LTX/Wan friendly)
+# width x height per resolution tier and orientation. Multiples of 64: Runware rejects
+# anything else for video ("multiples of 64"), and LTX/Wan are happy with them.
 WH_SIZES = {
-    "480p": {"landscape": (832, 480), "portrait": (480, 832), "square": (640, 640)},
+    "480p": {"landscape": (896, 512), "portrait": (512, 896), "square": (640, 640)},
     "720p": {"landscape": (1280, 704), "portrait": (704, 1280), "square": (960, 960)},
-    "1080p": {"landscape": (1920, 1088), "portrait": (1088, 1920), "square": (1440, 1440)},
+    "1080p": {"landscape": (1920, 1088), "portrait": (1088, 1920), "square": (1408, 1408)},
 }
 
 
@@ -450,7 +452,8 @@ class RunwareVideo(VideoProvider):
             "numberResults": 1,
             "includeCost": True,
             "inputs": {"frameImages": frames},
-            "safety": {"checkContent": False},
+            # No "safety" object: Runware's check is opt-in, and the live API rejects
+            # safety.checkContent for these models ("Allowed keys are: 'mode'").
         }
         if v.extra.get("sizing") == "wh":
             w, h = image_size(req.image)
@@ -671,19 +674,49 @@ class ReplicateVideo(VideoProvider):
         report("uploading", "Uploading keyframe to Replicate")
         image_url = await self.upload(req.image)
         last_url = await self.upload(req.last_image) if (req.last_image and req.variant.last_frame) else None
-        body = {"input": self.build_input(req, image_url, last_url)}
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.API}/models/{req.variant.id}/predictions",
-                json=body, headers={**self._headers(), "Content-Type": "application/json"},
-            )
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Replicate {resp.status_code}: {_error_text(resp)}")
-        prediction = resp.json()
+        prediction = await replicate_create(req.variant.id, self.build_input(req, image_url, last_url),
+                                            MediaConfig.REPLICATE_API_TOKEN)
         report("rendering", f"Rendering on Replicate ({req.variant.label})")
         output = await replicate_wait(prediction, self._headers())
         report("downloading", "Downloading video")
         return await download(output)
+
+
+_replicate_versions: Dict[str, str] = {}
+
+
+async def replicate_create(model: str, inp: Dict[str, Any], token: str, prefer_wait: Optional[int] = None) -> Dict:
+    """Start a Replicate prediction.
+
+    Official models run via /models/{owner}/{name}/predictions; community models
+    (e.g. lucataco/flux-dev-multi-lora) 404 there and must be run by version id, so
+    on 404 the latest version is looked up once and cached. "owner/name:version"
+    pins a version explicitly.
+    """
+    api = ReplicateVideo.API
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    if prefer_wait:
+        headers["Prefer"] = f"wait={prefer_wait}"
+    async with httpx.AsyncClient(timeout=120) as client:
+        if ":" in model:
+            version = model.split(":", 1)[1]
+            resp = await client.post(f"{api}/predictions", json={"version": version, "input": inp}, headers=headers)
+        else:
+            resp = await client.post(f"{api}/models/{model}/predictions", json={"input": inp}, headers=headers)
+            if resp.status_code == 404:
+                version = _replicate_versions.get(model)
+                if not version:
+                    info = await client.get(f"{api}/models/{model}", headers=headers)
+                    if info.status_code >= 300:
+                        raise RuntimeError(f"Replicate model {model} not found ({info.status_code})")
+                    version = ((info.json() or {}).get("latest_version") or {}).get("id")
+                    if not version:
+                        raise RuntimeError(f"Replicate model {model} has no published version")
+                    _replicate_versions[model] = version
+                resp = await client.post(f"{api}/predictions", json={"version": version, "input": inp}, headers=headers)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Replicate {resp.status_code}: {_error_text(resp)}")
+    return resp.json()
 
 
 async def replicate_wait(prediction: Dict, headers: Dict[str, str], timeout: Optional[float] = None) -> str:
@@ -877,6 +910,43 @@ def strip_tags(text: str) -> str:
     return _TAG_RE.sub(" ", text or "")
 
 
+def sanitize_speech_tags(text: str, inline: List[str], wrapping: List[str]) -> str:
+    """Normalize LLM tag output to what Grok understands.
+
+    <laugh> becomes [laugh] (small models mix up the two syntaxes), [whisper] is
+    dropped (wrapping tags need a span), unknown tags are removed, and wrapping tags
+    left open are closed at the end.
+    """
+    inline_set, wrap_set = set(inline), set(wrapping)
+    stack: List[str] = []
+
+    def norm(name: str) -> str:
+        return name.strip().lower().replace(" ", "-").replace("_", "-")
+
+    def repl(m: re.Match) -> str:
+        token = m.group(0)
+        if token.startswith("["):
+            name = norm(token[1:-1])
+            return f"[{name}]" if name in inline_set else ""
+        closing = token.startswith("</")
+        name = norm(token[2:-1] if closing else token[1:-1])
+        if name in inline_set:
+            return "" if closing else f"[{name}]"
+        if name not in wrap_set:
+            return ""
+        if not closing:
+            stack.append(name)
+            return f"<{name}>"
+        if name in stack:
+            stack.remove(name)
+            return f"</{name}>"
+        return ""
+
+    out = _TAG_RE.sub(repl, text or "")
+    out += "".join(f"</{n}>" for n in reversed(stack))
+    return re.sub(r"\s{2,}", " ", out).strip()
+
+
 def same_words(a: str, b: str) -> bool:
     """True when two texts have identical words in order, ignoring speech tags and punctuation."""
     norm = lambda s: [w.lower() for w in _WORD_RE.findall(strip_tags(s))]  # noqa: E731
@@ -1024,6 +1094,7 @@ class HelperLLM:
             reply = reply[5:].strip()
         if not reply or not same_words(text, reply):
             return {"text": text, "changed": False, "rejected": bool(reply)}
+        reply = sanitize_speech_tags(reply, inline, wrapping)
         return {"text": reply, "changed": reply != text}
 
     async def models(self, force: bool = False) -> List[Dict[str, Any]]:

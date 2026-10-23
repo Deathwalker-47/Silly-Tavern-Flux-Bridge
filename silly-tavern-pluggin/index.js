@@ -1,712 +1,630 @@
-/**
- * Auto Image Generator - Universal with LLM Context
- * FIXED: Mutation Observer approach - Works from empty chat
- * Waits for complete messages before triggering generation
- */
+// Media Studio for the Flux LoRA Bridge.
+// Characters send photos and videos in chat: decided by the bridge's helper LLM (or
+// every turn), rendered through the bridge, saved into the message and the
+// character's gallery. Also: per-character avatars for characters without a LoRA.
 
-(async function() {
-    console.log('🎨 Auto Image Generator with LLM loading...');
+import { bridge, bridgeBase, bridgeBlob, getCapabilities, cachedCapabilities } from './src/bridge.js';
+import { attachMedia, blobToBase64, imageFormat, messageMedia, messagesSinceMedia, saveFile, urlToDataUri } from './src/store.js';
+import { AVATAR_SLOTS, openCharacterMedia } from './src/gallery.js';
 
-    const DEFAULT_CONFIG = {
-        BRIDGE_URL: "http://localhost:7861/sdapi/v1/txt2img",
-        OPENROUTER_API_KEY: "",
-        OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
-        LLM_MODEL: "deepseek/deepseek-chat",
-        MESSAGE_COMPLETE_DELAY: 4000, // 4 seconds after last change
-        CHECK_INTERVAL: 1000, // Fallback check every second
-        MIN_MESSAGE_LENGTH: 20,
-        // When true: send raw narrative to bridge (bridge's DeepSeek handles summarization).
-        // When false: use OpenRouter LLM in plugin first (legacy behaviour).
-        USE_BRIDGE_SUMMARIZATION: true
+const ctx = () => SillyTavern.getContext();
+const KEY = 'flux_media';          // extension_settings key and character card field
+const NOTE_KEY = 'FLUX_MEDIA_NOTE';
+const TAG = '[MediaStudio]';
+
+const DEFAULTS = Object.freeze({
+    bridgeUrl: '',
+    bridgeToken: '',
+    imageMode: 'auto',          // auto | lora | avatar
+    imageSize: 'portrait',      // portrait | square | landscape
+    steps: 40,
+    cfg: 3.5,
+    autoMedia: 'director',      // off | director | every_turn
+    allowAutoImages: true,
+    allowAutoVideos: true,
+    imageCooldown: 3,
+    videoCooldown: 8,
+    dailyImageCap: 60,
+    dailyVideoCap: 10,
+    helperModel: '',
+    notifyCharacter: true,
+    videoProvider: 'runware',
+    videoFamily: 'ltx-2.3',
+    videoVariant: '',
+    videoDuration: 5,
+    videoResolution: '',
+    videoAudio: false,
+    useTwoImages: true,
+    debug: false,
+});
+const CHAR_DEFAULTS = Object.freeze({ avatars: [], imageMode: '', auto: true, avatarPrompt: '' });
+const SIZES = { portrait: [832, 1216], square: [1024, 1024], landscape: [1216, 832] };
+const SKIP_TYPES = new Set(['first_message', 'swipe', 'continue', 'impersonate', 'quiet']);
+
+function settings() {
+    const all = ctx().extensionSettings;
+    all[KEY] ??= {};
+    const s = all[KEY];
+    for (const [k, v] of Object.entries(DEFAULTS)) if (s[k] === undefined) s[k] = v;
+    s.usage ??= { date: '', images: 0, videos: 0 };
+    return s;
+}
+const save = () => ctx().saveSettingsDebounced();
+const log = (...a) => settings().debug && console.log(TAG, ...a);
+
+/** Carry the old plugin's bridge URL over once. */
+function migrateLegacyConfig() {
+    const s = settings();
+    if (s.bridgeUrl) return;
+    try {
+        const legacy = JSON.parse(localStorage.getItem('autoImageUniversalConfig') || '{}');
+        if (legacy.BRIDGE_URL && !ctx().extensionSettings?.sd?.auto_url) {
+            s.bridgeUrl = String(legacy.BRIDGE_URL).replace(/\/sdapi\/v1\/txt2img\/?$/, '');
+            save();
+        }
+    } catch { /* storage blocked */ }
+}
+
+// ---------------------------------------------------------------------------
+// Characters
+// ---------------------------------------------------------------------------
+
+let cardWrites = Promise.resolve();
+
+async function getCharMedia(chid) {
+    const c = ctx();
+    if (chid === undefined || chid === null || !c.characters[chid]) return { ...CHAR_DEFAULTS };
+    await c.unshallowCharacter?.(chid); // lazy-loaded cards don't carry extension fields
+    return { ...CHAR_DEFAULTS, ...(c.characters[chid]?.data?.extensions?.[KEY] ?? {}) };
+}
+
+/** Queued read-modify-write so quick edits don't overwrite each other. */
+function setCharMedia(chid, patch) {
+    const run = cardWrites.then(async () => {
+        const next = { ...(await getCharMedia(chid)), ...patch };
+        await ctx().writeExtensionField(chid, KEY, next);
+        return next;
+    });
+    cardWrites = run.catch(() => {});
+    return run;
+}
+
+/** The character who wrote a message (group-aware). */
+function characterOf(message) {
+    const c = ctx();
+    if (!c.groupId) return { chid: c.characterId, char: c.characters[c.characterId] };
+    const idx = c.characters.findIndex(ch => ch.avatar === message?.original_avatar || ch.name === message?.name);
+    return { chid: idx >= 0 ? idx : undefined, char: c.characters[idx] };
+}
+
+const sdPrompt = (char) => char?.data?.extensions?.sd_character_prompt || char?.data?.extensions?.sd_api_prompt || '';
+
+function visibleCharacters() {
+    const c = ctx();
+    const names = new Set();
+    // Narrator notes (/sys, e.g. TavernVoice's call markers) are not characters.
+    for (const m of c.chat.slice(-10)) if (!m.is_user && !m.is_system && m.extra?.type !== 'narrator' && m.name) names.add(m.name);
+    if (c.groupId) {
+        const group = c.groups.find(g => g.id === c.groupId);
+        for (const avatar of group?.members ?? []) {
+            const ch = c.characters.find(x => x.avatar === avatar);
+            if (ch?.name) names.add(ch.name);
+        }
+    } else if (c.name2) {
+        names.add(c.name2);
+    }
+    const prompts = {};
+    for (const name of names) {
+        const ch = c.characters.find(x => x.name === name);
+        if (sdPrompt(ch)) prompts[name] = sdPrompt(ch);
+    }
+    return { names: [...names], prompts };
+}
+
+/** Raw scene text for the bridge; its summarizer turns this into a visual prompt. */
+function narrativeFor(messageId) {
+    const c = ctx();
+    const msg = c.chat[messageId];
+    const { char } = characterOf(msg);
+    const { names } = visibleCharacters();
+    const recent = c.chat.slice(Math.max(0, messageId - 3), messageId)
+        .filter(m => !m.is_system).map(m => m.mes).join(' ').slice(-500);
+    return [sdPrompt(char), names.length ? `Characters present: ${names.join(', ')}` : '', msg?.mes || '',
+        recent ? `Recent context: ${recent}` : ''].filter(Boolean).join('\n\n');
+}
+
+function chatTail(uptoId, count = 10) {
+    const c = ctx();
+    return c.chat.slice(Math.max(0, uptoId + 1 - count), uptoId + 1)
+        .filter(m => !m.is_system && m.extra?.type !== 'narrator')
+        .map(m => ({ name: m.name, is_user: !!m.is_user, text: String(m.mes || '').slice(0, 1500) }));
+}
+
+async function avatarsFor(cfg) {
+    const urls = (cfg.avatars || []).filter(Boolean).slice(0, 2);
+    const out = [];
+    for (const url of urls) {
+        try { out.push(await urlToDataUri(url)); } catch (err) { console.warn(TAG, 'avatar unreadable', url, err); }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Usage limits and the note for the main LLM
+// ---------------------------------------------------------------------------
+
+function usage() {
+    const s = settings();
+    const today = new Date().toISOString().slice(0, 10);
+    if (s.usage.date !== today) s.usage = { date: today, images: 0, videos: 0 };
+    return s.usage;
+}
+
+function bumpUsage(kind) {
+    usage()[kind]++;
+    save();
+}
+
+let noteArmed = false;
+
+function noteForCharacter(char, kind, text) {
+    if (!settings().notifyCharacter) return;
+    const c = ctx();
+    const note = `[${char || c.name2} sent ${c.name1} a ${kind}${text ? `: ${String(text).slice(0, 200)}` : ''}]`;
+    c.setExtensionPrompt(NOTE_KEY, note, 1, 1, false, 0); // in-chat, depth 1, system role
+    noteArmed = false;
+}
+
+// ---------------------------------------------------------------------------
+// Status line under a message while media renders
+// ---------------------------------------------------------------------------
+
+function statusLine(messageId, text) {
+    const id = `fm-status-${messageId}-${Math.random().toString(36).slice(2, 7)}`;
+    const place = () => {
+        let el = document.getElementById(id);
+        if (!el) {
+            const block = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_block`);
+            if (!block) return null;
+            el = document.createElement('div');
+            el.id = id;
+            el.className = 'fm-status';
+            block.appendChild(el);
+        }
+        return el;
     };
+    const set = (t) => { const el = place(); if (el) el.innerHTML = t; };
+    set(text);
+    return { set, remove: () => document.getElementById(id)?.remove() };
+}
 
-    function loadConfig() {
-        const runtime = (typeof window !== 'undefined' && window.AUTO_IMAGE_UNIVERSAL_CONFIG)
-            ? window.AUTO_IMAGE_UNIVERSAL_CONFIG
-            : {};
+// ---------------------------------------------------------------------------
+// Image and video generation
+// ---------------------------------------------------------------------------
 
-        let persisted = {};
-        try {
-            const raw = localStorage.getItem('autoImageUniversalConfig');
-            persisted = raw ? JSON.parse(raw) : {};
-        } catch (_) {
-            persisted = {};
-        }
+async function imageRequest(messageId, prompt) {
+    const s = settings();
+    const c = ctx();
+    const msg = c.chat[messageId];
+    const { chid, char } = characterOf(msg);
+    const cfg = await getCharMedia(chid);
+    const { names, prompts } = visibleCharacters();
+    const [width, height] = SIZES[s.imageSize] || SIZES.portrait;
+    return {
+        body: {
+            prompt: prompt || narrativeFor(messageId),
+            character_name: char?.name || c.name2,
+            character_prompts: prompts,
+            visible_characters: names,
+            mode: cfg.imageMode || s.imageMode,
+            avatars: await avatarsFor(cfg),
+            width, height, steps: Number(s.steps), cfg_scale: Number(s.cfg),
+        },
+        char,
+    };
+}
 
-        return { ...DEFAULT_CONFIG, ...persisted, ...runtime };
-    }
+const busy = new Set(); // "image:12" / "video:12" so a message isn't generated twice at once
 
-    const CONFIG = loadConfig();
-
-    function normalizeBridgeUrl(rawUrl) {
-        if (!rawUrl || typeof rawUrl !== 'string') {
-            return DEFAULT_CONFIG.BRIDGE_URL;
-        }
-
-        const trimmed = rawUrl.trim().replace(/\/$/, '');
-        if (!trimmed) return DEFAULT_CONFIG.BRIDGE_URL;
-
-        return trimmed.endsWith('/sdapi/v1/txt2img')
-            ? trimmed
-            : `${trimmed}/sdapi/v1/txt2img`;
-    }
-
-    /**
-     * Resolve bridge URL at call time:
-     *  1. SillyTavern's built-in Image Generation SD Web UI URL (auto_url)
-     *  2. Plugin config (localStorage / window override / default)
-     */
-    function resolveBridgeUrl() {
-        try {
-            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-                const ctx = SillyTavern.getContext();
-                const stUrl = ctx?.extensionSettings?.sd?.auto_url;
-                if (stUrl && typeof stUrl === 'string' && stUrl.trim().length > 0) {
-                    return normalizeBridgeUrl(stUrl);
-                }
-            }
-        } catch (_) {}
-
-        return normalizeBridgeUrl(CONFIG.BRIDGE_URL);
-    }
-
-    let lastProcessedMessage = '';
-    let messageCompleteTimer = null;
-    let isProcessing = false;
-    let observerActive = false;
-
-    // ============================================
-    // CORE MESSAGE DETECTION
-    // ============================================
-
-    /**
-     * Get the latest AI message from chat
-     */
-    function getLatestAIMessage() {
-        const chat = document.querySelector('#chat');
-        if (!chat) return null;
-
-        const messages = chat.querySelectorAll('.mes');
-        if (messages.length === 0) return null;
-
-        for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            const isUser = msg.getAttribute('is_user') === 'true';
-            const isSystem = msg.getAttribute('is_system') === 'true';
-
-            // Get AI message (not user, not system)
-            if (!isUser && !isSystem) {
-                const messageText = msg.querySelector('.mes_text');
-                const text = messageText ? messageText.innerText.trim() : '';
-                
-                if (text.length >= CONFIG.MIN_MESSAGE_LENGTH) {
-                    return {
-                        text: text,
-                        element: msg,
-                        name: msg.querySelector('.ch_name')?.textContent || 'Unknown'
-                    };
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Handle message completion - triggers image generation
-     */
-    async function onMessageComplete() {
-        const message = getLatestAIMessage();
-
-        if (!message || message.text === lastProcessedMessage) {
+async function generateImage(messageId, { prompt = '', caption = '', origin = 'manual' } = {}) {
+    const key = `image:${messageId}`;
+    if (busy.has(key)) return;
+    busy.add(key);
+    const chatId = ctx().getCurrentChatId();
+    const status = statusLine(messageId, '<i class="fa-solid fa-spinner fa-spin"></i> Generating image…');
+    try {
+        const { body, char } = await imageRequest(messageId, prompt);
+        const res = await bridge('/media/image', { method: 'POST', body });
+        const b64 = res.images?.[0];
+        if (!b64) throw new Error('The bridge returned no image');
+        const url = await saveFile(b64, imageFormat(b64), char?.name || 'MediaStudio', `img_${Date.now()}`);
+        bumpUsage('images');
+        if (ctx().getCurrentChatId() !== chatId) {
+            toastr.info('Chat changed; the image was saved to the character gallery.', 'Media Studio');
             return;
         }
-
-        // Check if image already exists for this message
-        if (message.element.querySelector('.auto-generated-image')) {
-            console.log('[AutoImageGen] ⏭️ Image already exists for this message');
-            lastProcessedMessage = message.text;
-            return;
-        }
-
-        console.log('[AutoImageGen] ✅ Message complete, triggering generation');
-        lastProcessedMessage = message.text;
-
-        await processNewMessage(message);
+        await attachMedia(messageId, { url, type: 'image', title: caption || res.parameters?.prompt || body.prompt, origin });
+        noteForCharacter(char?.name, 'photo', caption || prompt);
+        log('image', res.mode, url);
+    } catch (err) {
+        console.error(TAG, err);
+        toastr.error(err?.message || String(err), 'Media Studio: image failed');
+    } finally {
+        status.remove();
+        busy.delete(key);
     }
+}
 
-    /**
-     * Reset message complete timer (debounced)
-     */
-    function resetMessageCompleteTimer() {
-        clearTimeout(messageCompleteTimer);
-        messageCompleteTimer = setTimeout(onMessageComplete, CONFIG.MESSAGE_COMPLETE_DELAY);
-    }
-
-    // ============================================
-    // MUTATION OBSERVER SETUP
-    // ============================================
-
-    /**
-     * Setup MutationObserver to watch for new messages and text changes
-     */
-    function setupMessageObserver() {
-        if (observerActive) return;
-
-        const chatContainer = document.querySelector('#chat');
-        if (!chatContainer) {
-            console.log('[AutoImageGen] Chat container not found, retrying...');
-            setTimeout(setupMessageObserver, 1000);
-            return;
-        }
-
-        console.log('[AutoImageGen] Setting up message observer');
-        observerActive = true;
-
-        const observer = new MutationObserver((mutations) => {
-            let shouldResetTimer = false;
-
-            for (const mutation of mutations) {
-                // ✅ CHECK 1: New message nodes being added (works from empty chat)
-                if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                    for (const node of mutation.addedNodes) {
-                        if (node.classList && node.classList.contains('mes')) {
-                            const isUser = node.getAttribute('is_user') === 'true';
-                            const isSystem = node.getAttribute('is_system') === 'true';
-
-                            // New AI message detected
-                            if (!isUser && !isSystem) {
-                                console.log('[AutoImageGen] 📨 New AI message detected');
-                                shouldResetTimer = true;
-                            }
-                        }
-                    }
-                }
-
-                // ✅ CHECK 2: Text changes in existing messages (streaming text)
-                if (mutation.type === 'characterData' || mutation.type === 'childList') {
-                    const target = mutation.target.nodeType === Node.TEXT_NODE
-                        ? mutation.target.parentElement
-                        : mutation.target;
-
-                    if (target && target.closest('.mes_text')) {
-                        const mesElement = target.closest('.mes');
-                        if (mesElement) {
-                            const isUser = mesElement.getAttribute('is_user') === 'true';
-                            const isSystem = mesElement.getAttribute('is_system') === 'true';
-
-                            // Text change in AI message
-                            if (!isUser && !isSystem) {
-                                console.log('[AutoImageGen] ✏️ AI message text updated');
-                                shouldResetTimer = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (shouldResetTimer) {
-                resetMessageCompleteTimer();
-            }
-        });
-
-        // Configure observer to catch all changes
-        observer.observe(chatContainer, {
-            childList: true,           // ✅ Watch for new message nodes
-            subtree: true,             // ✅ Watch all descendants
-            characterData: true,       // ✅ Watch text content changes
-            characterDataOldValue: false,
-            attributes: false
-        });
-
-        console.log('[AutoImageGen] ✅ Observer active - watching for messages');
-    }
-
-    /**
-     * Fallback polling in case observer misses something
-     */
-    function startFallbackCheck() {
-        setInterval(() => {
-            if (!isProcessing && !messageCompleteTimer) {
-                const message = getLatestAIMessage();
-                if (message && message.text !== lastProcessedMessage) {
-                    // New message detected but observer didn't catch it
-                    console.log('[AutoImageGen] 🔄 Fallback detected new message');
-                    resetMessageCompleteTimer();
-                }
-            }
-        }, CONFIG.CHECK_INTERVAL);
-    }
-
-    // ============================================
-    // CHARACTER & PROMPT HANDLING
-    // ============================================
-
-    function getChatContext(numMessages = 5) {
-        const chat = document.querySelector('#chat');
-        const messages = chat?.querySelectorAll('.mes');
-        if (!messages || messages.length === 0) return [];
-
-        const context = [];
-        const startIndex = Math.max(0, messages.length - numMessages);
-
-        for (let i = startIndex; i < messages.length; i++) {
-            const msg = messages[i];
-            const name = msg.querySelector('.ch_name')?.textContent || 'Unknown';
-            const text = msg.querySelector('.mes_text')?.textContent || '';
-
-            if (text.trim()) {
-                context.push({
-                    role: name === 'You' ? 'user' : 'character',
-                    name: name,
-                    content: text.trim()
-                });
-            }
-        }
-
-        return context;
-    }
-
-    function getActiveCharacterName() {
-        try {
-            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-                const context = SillyTavern.getContext();
-                if (context.name2) return context.name2;
-                if (context.characters && context.characterId >= 0) {
-                    return context.characters[context.characterId]?.name;
-                }
-            }
-
-            const chat = document.querySelector('#chat');
-            const messages = chat?.querySelectorAll('.mes');
-            if (messages && messages.length > 0) {
-                for (let i = messages.length - 1; i >= 0; i--) {
-                    const msg = messages[i];
-                    const isUser = msg.getAttribute('is_user') === 'true';
-                    if (!isUser) {
-                        const name = msg.querySelector('.ch_name')?.textContent;
-                        if (name) return name;
-                    }
-                }
-            }
-
-            return null;
-        } catch (e) {
-            console.error('[AutoImageGen] ❌ Error getting character name:', e);
-            return null;
-        }
-    }
-
-    function getCharacterImagePrompt(characterName) {
-        try {
-            console.log(`[AutoImageGen] 🔍 Looking for image prompt for: ${characterName}`);
-
-            let character = null;
-
-            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-                const context = SillyTavern.getContext();
-                if (context.characters && context.characterId >= 0) {
-                    character = context.characters[context.characterId];
-                }
-            }
-
-            if (!character && typeof characters !== 'undefined' && typeof this_chid !== 'undefined') {
-                character = characters[this_chid];
-            }
-
-            if (!character) {
-                console.log('[AutoImageGen] ⚠️ Could not access character data');
-                return getFallbackPrompt(characterName);
-            }
-
-            console.log('[AutoImageGen] ✅ Got character data');
-
-            // Check sd_character_prompt FIRST (correct SillyTavern field)
-            const possiblePaths = [
-                character.data?.extensions?.sd_character_prompt,
-                character.data?.extensions?.sd_api_prompt,
-                character.extensions?.sd_character_prompt,
-                character.extensions?.sd_api_prompt,
-                character.sd_character_prompt,
-                character.sd_prompt
-            ];
-
-            for (let i = 0; i < possiblePaths.length; i++) {
-                const prompt = possiblePaths[i];
-                if (prompt && typeof prompt === 'string' && prompt.trim().length > 0) {
-                    console.log(`[AutoImageGen] ✅ Found prompt: ${prompt.substring(0, 80)}...`);
-                    return prompt.trim();
-                }
-            }
-
-            console.log('[AutoImageGen] ⚠️ No prompt found, using fallback');
-            return getFallbackPrompt(characterName);
-
-        } catch (e) {
-            console.error('[AutoImageGen] ❌ Error reading character data:', e);
-            return getFallbackPrompt(characterName);
-        }
-    }
-
-    function getFallbackPrompt(characterName) {
-        console.log(`[AutoImageGen] ⚠️ Using fallback prompt for: ${characterName}`);
-        const fallbackPrompts = {
-            'Nimya': 'nimya, nimya_face, nimya_alt, 33 year-old south woman, nsfw2, warm brown skin, round face, long wavy black hair, beautiful face, elegant jewelry',
-            'Shreya': 'Shreya, beautiful woman, long black hair, warm brown skin, natural beauty',
-            'Sai Pallavi': 'Sai Pallavi, gorgeous actress, natural beauty, curly hair, radiant smile',
-            'Shraddha Kapoor': 'Shraddha Kapoor, beautiful actress, round face, long black hair, elegant'
+async function generateVideo(messageId, { motion = '', imagePrompt = '', caption = '', origin = 'manual' } = {}) {
+    const key = `video:${messageId}`;
+    if (busy.has(key)) return;
+    busy.add(key);
+    const s = settings();
+    const c = ctx();
+    const chatId = c.getCurrentChatId();
+    const msg = c.chat[messageId];
+    const { char } = characterOf(msg);
+    const folder = char?.name || 'MediaStudio';
+    const status = statusLine(messageId, '<i class="fa-solid fa-film"></i> Preparing video…');
+    try {
+        const images = messageMedia(msg).filter(m => m.type === 'image');
+        const payload = {
+            provider: s.videoProvider,
+            family: s.videoFamily,
+            variant: s.videoVariant || undefined,
+            prompt: motion,
+            duration: Number(s.videoDuration) || 5,
+            resolution: s.videoResolution || undefined,
+            audio: !!s.videoAudio,
         };
-        return fallbackPrompts[characterName] || `${characterName}, beautiful woman, natural beauty`;
-    }
-
-    function cleanPrompt(text) {
-        return text
-            .replace(/[^\x00-\x7F\u00C0-\u024F]/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    /**
-     * Collect all unique character names visible in recent chat messages.
-     * Also checks SillyTavern group chat membership if available.
-     */
-    function getAllVisibleCharacterNames(context) {
-        const names = new Set();
-
-        for (const msg of context) {
-            if (msg.role === 'character' && msg.name && msg.name !== 'Unknown') {
-                names.add(msg.name);
-            }
-        }
-
-        try {
-            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-                const ctx = SillyTavern.getContext();
-                if (ctx.groups && ctx.selectedGroupId) {
-                    const group = ctx.groups.find(g => g.id === ctx.selectedGroupId);
-                    if (group && group.members) {
-                        for (const memberId of group.members) {
-                            const char = ctx.characters?.find(c => c.avatar === memberId);
-                            if (char?.name) names.add(char.name);
-                        }
-                    }
-                }
-            }
-        } catch (_) {}
-
-        return Array.from(names);
-    }
-
-    /**
-     * Fetch SD prompt / trigger words for each named character from ST character data.
-     * Returns an object: { "Nimya": "nimya33 south indian woman...", ... }
-     */
-    function getAllCharacterPrompts(characterNames) {
-        const prompts = {};
-
-        try {
-            if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
-                const ctx = SillyTavern.getContext();
-                if (ctx.characters) {
-                    for (const char of ctx.characters) {
-                        if (characterNames.includes(char.name)) {
-                            const sdPrompt =
-                                char.data?.extensions?.sd_character_prompt ||
-                                char.data?.extensions?.sd_api_prompt ||
-                                char.extensions?.sd_character_prompt ||
-                                char.extensions?.sd_api_prompt ||
-                                null;
-                            if (sdPrompt && sdPrompt.trim()) {
-                                prompts[char.name] = sdPrompt.trim();
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (_) {}
-
-        return prompts;
-    }
-
-    /**
-     * Build a raw narrative payload for the bridge.
-     * Includes character SD prompts (trigger words), all visible character names,
-     * the current message, and a short window of recent context.
-     * The bridge's DeepSeek summarizer will process this — no LLM call here.
-     */
-    function buildRawPromptPayload(currentMessage, context, activeCharPrefix, allCharNames) {
-        const parts = [];
-
-        // Character SD prompt (trigger words) for the active character
-        if (activeCharPrefix) {
-            parts.push(activeCharPrefix);
-        }
-
-        // Explicit character list so bridge keyword matcher can find all LoRAs
-        if (allCharNames.length > 0) {
-            parts.push(`Characters present: ${allCharNames.join(', ')}`);
-        }
-
-        // Current AI message — this is the scene we're illustrating
-        parts.push(currentMessage.text);
-
-        // Add 2 preceding messages for scene continuity (capped to avoid flooding)
-        const recentContext = context.slice(-3, -1);
-        if (recentContext.length > 0) {
-            const contextText = recentContext
-                .map(m => m.content)
-                .join(' ')
-                .substring(0, 500);
-            if (contextText.trim()) {
-                parts.push(`Recent context: ${contextText}`);
-            }
-        }
-
-        return parts.join('\n\n');
-    }
-
-    // ============================================
-    // LLM VISUAL PROMPT GENERATION
-    // ============================================
-
-    async function generateVisualPrompt(context, characterPrefix) {
-        console.log('[AutoImageGen] 🤖 Using LLM to generate visual prompt...');
-
-        if (!CONFIG.OPENROUTER_API_KEY) {
-            const lastMsg = (context && context.length > 0) ? context[context.length - 1] : { content: '' };
-            const cleanContent = cleanPrompt((lastMsg.content || '').substring(0, 150));
-            const fallback = cleanContent || 'portrait, cinematic lighting, detailed face, realistic skin, high detail';
-            return characterPrefix ? `${characterPrefix}, ${fallback}` : fallback;
-        }
-
-        const conversationText = context.map(msg =>
-            `${msg.name}: ${msg.content}`
-        ).join('\n');
-
-        const systemPrompt = `You are a visual scene descriptor for Flux image generation. Given a conversation, create a detailed visual description.
-
-CRITICAL RULES:
-1. Output ONLY in English (no other languages)
-2. Focus on: pose, expression, clothing, gesture, setting, mood
-3. Be specific and detailed (use descriptive adjectives)
-4. Use comma-separated keywords
-5. Maximum 150 words
-6. Do NOT include dialogue or text
-7. Do NOT include non-English characters
-
-Format: descriptive keywords separated by commas
-Example: "smiling warmly, playful expression, standing in kitchen, wearing casual dress, hands on hips, bright lighting, relaxed pose"`;
-
-        const userPrompt = `Conversation:\n${conversationText}\n\nDescribe this scene visually in English only (pose, expression, action, setting):`;
-
-        try {
-            const response = await fetch(CONFIG.OPENROUTER_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${CONFIG.OPENROUTER_API_KEY}`,
-                    'HTTP-Referer': window.location.href,
-                    'X-Title': 'SillyTavern Auto-Image'
-                },
-                body: JSON.stringify({
-                    model: CONFIG.LLM_MODEL,
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        { role: 'user', content: userPrompt }
-                    ],
-                    temperature: 0.5,
-                    max_tokens: 200
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`OpenRouter returned ${response.status}`);
-            }
-
-            const data = await response.json();
-            let visualPrompt = data.choices[0].message.content.trim();
-            visualPrompt = cleanPrompt(visualPrompt);
-
-            const fullPrompt = characterPrefix
-                ? `${characterPrefix}, ${visualPrompt}`
-                : visualPrompt;
-
-            console.log(`[AutoImageGen] ✅ LLM generated: ${visualPrompt}`);
-            console.log(`[AutoImageGen] 📝 Full prompt: ${fullPrompt.substring(0, 100)}...`);
-
-            return fullPrompt;
-
-        } catch (e) {
-            console.error('[AutoImageGen] ❌ LLM failed:', e);
-            const lastMsg = (context && context.length > 0) ? context[context.length - 1] : { content: '' };
-            const cleanContent = cleanPrompt((lastMsg.content || '').substring(0, 100));
-            const fallback = cleanContent || 'portrait, cinematic lighting, detailed face, realistic skin, high detail';
-            return characterPrefix
-                ? `${characterPrefix}, ${fallback}`
-                : fallback;
-        }
-    }
-
-    // ============================================
-    // IMAGE GENERATION & DISPLAY
-    // ============================================
-
-    async function generateImage(prompt, metadata = {}) {
-        const bridgeUrl = resolveBridgeUrl();
-        console.log('[AutoImageGen] 🎨 Sending to bridge...');
-        console.log(`[AutoImageGen] 📝 Prompt: ${prompt.substring(0, 100)}...`);
-        console.log(`[AutoImageGen] 🌉 URL: ${bridgeUrl}`);
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 90000);
-
-        try {
-            const response = await fetch(bridgeUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal: controller.signal,
-                body: JSON.stringify({
-                    prompt: prompt,
-                    negative_prompt: "ugly, deformed, blurry, low quality, bad anatomy, text, watermark, words, letters, anatomical diagram, medical diagram",
-                    steps: 40,
-                    cfg_scale: 3.5,
-                    width: 1024,
-                    height: 1024,
-                    seed: -1,
-                    // Multi-char metadata — bridge uses these for LoRA pre-matching
-                    character_prompts: metadata.characterPrompts || {},
-                    visible_characters: metadata.visibleCharacters || []
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`Bridge returned ${response.status}`);
-            }
-
-            const data = await response.json();
-            console.log('[AutoImageGen] ✅ Image generated successfully');
-            return data.images[0];
-
-        } catch (e) {
-            if (e.name === 'AbortError') {
-                console.error('[AutoImageGen] ❌ Image generation timed out after 90 seconds.');
-            } else if (e instanceof TypeError) {
-                console.error(
-                    '[AutoImageGen] ❌ Failed to reach bridge. Make sure Flux LoRA Bridge is running and reachable at:',
-                    bridgeUrl
-                );
-            } else {
-                console.error('[AutoImageGen] ❌ Image generation failed:', e);
-            }
-            return null;
-        } finally {
-            clearTimeout(timeoutId);
-        }
-    }
-
-    function displayImage(base64Image, messageElement) {
-        if (messageElement.querySelector('.auto-generated-image')) {
-            console.log('[AutoImageGen] ⏭️ Image already displayed');
-            return;
-        }
-
-        const imgContainer = document.createElement('div');
-        imgContainer.className = 'auto-generated-image';
-
-        const img = document.createElement('img');
-        img.src = `data:image/png;base64,${base64Image}`;
-        img.style.maxWidth = '100%';
-        img.style.borderRadius = '8px';
-        img.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-        img.style.cursor = 'pointer';
-        img.onclick = () => window.open(img.src, '_blank');
-
-        imgContainer.appendChild(img);
-
-        const messageText = messageElement.querySelector('.mes_text');
-        if (messageText) {
-            messageText.parentNode.insertBefore(imgContainer, messageText.nextSibling);
+        if (images.length) {
+            // Animate the message's own image; with 2+ images, travel from the first to the last.
+            const two = s.useTwoImages && images.length > 1;
+            payload.image = await urlToDataUri(images[two ? 0 : images.length - 1].url);
+            if (two) payload.last_image = await urlToDataUri(images[images.length - 1].url);
         } else {
-            messageElement.appendChild(imgContainer);
+            payload.keyframe = (await imageRequest(messageId, imagePrompt)).body;
         }
+        const job = await bridge('/video/generate', { method: 'POST', body: payload });
+        const started = Date.now();
+        let state = job;
+        while (!['done', 'failed'].includes(state.status)) {
+            await new Promise(r => setTimeout(r, 2500));
+            state = await bridge(`/video/jobs/${job.job_id}`, { timeout: 20000 });
+            const secs = Math.round((Date.now() - started) / 1000);
+            status.set(`<i class="fa-solid fa-film fa-beat-fade"></i> ${state.message || state.status} · ${secs}s`);
+            if (Date.now() - started > 25 * 60 * 1000) throw new Error('Video took longer than 25 minutes');
+        }
+        if (state.status === 'failed') throw new Error(state.error || 'Video generation failed');
 
-        console.log('[AutoImageGen] 🖼️ Image displayed');
-    }
-
-    // ============================================
-    // MESSAGE PROCESSING
-    // ============================================
-
-    async function processNewMessage(message) {
-        if (isProcessing) {
-            console.log('[AutoImageGen] ⏳ Already processing, skipping...');
+        const sameChat = () => ctx().getCurrentChatId() === chatId;
+        if (state.keyframe_b64) {
+            // The bridge made the first frame; keep it too, so the chat has the still.
+            const kurl = await saveFile(state.keyframe_b64, imageFormat(state.keyframe_b64), folder, `frame_${Date.now()}`);
+            if (sameChat()) await attachMedia(messageId, { url: kurl, type: 'image', title: imagePrompt || motion, origin });
+        }
+        const blob = await bridgeBlob(state.video_path);
+        const vurl = await saveFile(await blobToBase64(blob), 'mp4', folder, `video_${Date.now()}`);
+        bumpUsage('videos');
+        if (!sameChat()) {
+            toastr.info('Chat changed; the video was saved to the character gallery.', 'Media Studio');
             return;
         }
+        await attachMedia(messageId, { url: vurl, type: 'video', title: caption || motion, origin });
+        noteForCharacter(char?.name, 'short video', caption || motion);
+        log('video', state);
+    } catch (err) {
+        console.error(TAG, err);
+        toastr.error(err?.message || String(err), 'Media Studio: video failed');
+    } finally {
+        status.remove();
+        busy.delete(key);
+    }
+}
 
-        isProcessing = true;
+/** Motion + still prompts for a manual video: from the helper when available. */
+async function promptsForVideo(messageId) {
+    const s = settings();
+    const c = ctx();
+    const msg = c.chat[messageId];
+    try {
+        const d = await bridge('/helper/decide', {
+            method: 'POST',
+            body: { messages: chatTail(messageId), char: characterOf(msg).char?.name || c.name2, user: c.name1, force: 'video', model: s.helperModel || undefined },
+        });
+        return { motion: d.motion_prompt, imagePrompt: d.image_prompt, caption: d.caption };
+    } catch (err) {
+        log('helper unavailable for video prompts', err);
+        return { motion: '', imagePrompt: '', caption: '' };
+    }
+}
 
-        try {
-            console.log(`\n[AutoImageGen] 📝 Processing message from ${message.name}`);
+// ---------------------------------------------------------------------------
+// Auto media after each character message
+// ---------------------------------------------------------------------------
 
-            const activeCharacterName = getActiveCharacterName();
-            console.log(`[AutoImageGen] 👤 Active character: ${activeCharacterName}`);
+let warnedHelper = false;
 
-            if (CONFIG.USE_BRIDGE_SUMMARIZATION) {
-                // ── New path: send raw narrative to bridge, let DeepSeek summarize ──
-                const context = getChatContext(10);
-                const visibleCharacters = getAllVisibleCharacterNames(context);
-                const characterPrompts = getAllCharacterPrompts(visibleCharacters);
-                const activeCharPrefix = getCharacterImagePrompt(activeCharacterName);
+async function onMessageReceived(messageId, type) {
+    if (noteArmed) {
+        ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
+        noteArmed = false;
+    }
+    const s = settings();
+    if (s.autoMedia === 'off' || SKIP_TYPES.has(type)) return;
+    const c = ctx();
+    const msg = c.chat[messageId];
+    if (!msg || msg.is_user || msg.is_system || msg.extra?.type === 'narrator' || String(msg.mes || '').length < 20) return;
+    const { chid, char } = characterOf(msg);
+    const cfg = await getCharMedia(chid);
+    if (cfg.auto === false) return;
+    const u = usage();
 
-                console.log(`[AutoImageGen] 👥 Visible characters: ${visibleCharacters.join(', ')}`);
-                console.log(`[AutoImageGen] 📎 Character prompts found: ${Object.keys(characterPrompts).join(', ')}`);
+    if (s.autoMedia === 'every_turn') {
+        if (u.images >= Number(s.dailyImageCap)) return;
+        generateImage(messageId, { origin: 'auto' });
+        return;
+    }
 
-                const rawPrompt = buildRawPromptPayload(message, context, activeCharPrefix, visibleCharacters);
-                const base64Image = await generateImage(rawPrompt, { characterPrompts, visibleCharacters });
-
-                if (base64Image) {
-                    displayImage(base64Image, message.element);
-                }
-            } else {
-                // ── Legacy path: OpenRouter summarization in plugin ──
-                const characterPrefix = getCharacterImagePrompt(activeCharacterName);
-                console.log(`[AutoImageGen] 🎨 Character prefix: ${characterPrefix.substring(0, 80)}...`);
-
-                const context = getChatContext(5);
-                const visualPrompt = await generateVisualPrompt(context, characterPrefix);
-                const base64Image = await generateImage(visualPrompt);
-
-                if (base64Image) {
-                    displayImage(base64Image, message.element);
-                }
-            }
-
-        } catch (e) {
-            console.error('[AutoImageGen] ❌ Error processing message:', e);
-        } finally {
-            isProcessing = false;
+    // Helper decides. Cooldowns and caps are enforced here, not left to the LLM.
+    const caps = cachedCapabilities();
+    const videoReady = !!caps?.video?.providers?.find(p => p.id === s.videoProvider)?.configured;
+    const allowImage = s.allowAutoImages && messagesSinceMedia('image') >= Number(s.imageCooldown) && u.images < Number(s.dailyImageCap);
+    const allowVideo = s.allowAutoVideos && videoReady && messagesSinceMedia('video') >= Number(s.videoCooldown) && u.videos < Number(s.dailyVideoCap);
+    if (!allowImage && !allowVideo) return;
+    try {
+        const d = await bridge('/helper/decide', {
+            method: 'POST',
+            body: {
+                messages: chatTail(messageId), char: char?.name || c.name2, user: c.name1,
+                allow_image: allowImage, allow_video: allowVideo, model: s.helperModel || undefined,
+            },
+        });
+        log('director', d);
+        if (d.action === 'image') generateImage(messageId, { prompt: d.image_prompt, caption: d.caption, origin: 'auto' });
+        else if (d.action === 'video') generateVideo(messageId, { motion: d.motion_prompt, imagePrompt: d.image_prompt, caption: d.caption, origin: 'auto' });
+    } catch (err) {
+        console.warn(TAG, 'director failed', err);
+        if (!warnedHelper) {
+            warnedHelper = true;
+            toastr.warning(`Helper LLM unavailable, so auto media is paused for now: ${err?.message || err}`, 'Media Studio');
         }
     }
+}
 
-    // ============================================
-    // INITIALIZATION
-    // ============================================
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
 
-    function init() {
-        console.log('[AutoImageGen] 🚀 Initializing...');
-        setupMessageObserver();
-        startFallbackCheck();
-        console.log('[AutoImageGen] ✅ Ready - watching for messages');
-        console.log(`[AutoImageGen] ⏱️ Message completion delay: ${CONFIG.MESSAGE_COMPLETE_DELAY}ms`);
-        console.log(`[AutoImageGen] 🌉 Bridge: ${resolveBridgeUrl()}`);
-        console.log(`[AutoImageGen] 🤖 OpenRouter key configured: ${Boolean(CONFIG.OPENROUTER_API_KEY)}`);
-        console.log(`[AutoImageGen] 🧠 Bridge summarization: ${CONFIG.USE_BRIDGE_SUMMARIZATION ? 'enabled (raw text → DeepSeek)' : 'disabled (OpenRouter in plugin)'}`);
+const esc = (s) => $('<span>').text(String(s ?? '')).html();
+
+function videoSelection() {
+    const s = settings();
+    const caps = cachedCapabilities();
+    const provider = caps?.video?.providers?.find(p => p.id === s.videoProvider);
+    const family = provider?.families?.find(f => f.id === s.videoFamily);
+    const variant = family?.variants?.find(v => v.id === s.videoVariant) || family?.variants?.[0];
+    return { caps, provider, family, variant };
+}
+
+function renderVideoPickers() {
+    const s = settings();
+    const { caps, provider, family, variant } = videoSelection();
+    if (!caps) return;
+    $('#fm_video_provider').html(caps.video.providers.map(p =>
+        `<option value="${p.id}" ${p.id === s.videoProvider ? 'selected' : ''} ${p.configured ? '' : 'disabled'}>${esc(p.label)}${p.configured ? '' : ' (no key on bridge)'}</option>`).join(''));
+    $('#fm_video_family').html((provider?.families || []).map(f =>
+        `<option value="${f.id}" ${f.id === s.videoFamily ? 'selected' : ''}>${esc(f.label)}</option>`).join('')
+        || '<option value="">No models</option>');
+    $('#fm_video_variant').html((family?.variants || []).map(v =>
+        `<option value="${esc(v.id)}" ${v.id === variant?.id ? 'selected' : ''}>${esc(v.label)}${v.hint ? ` (${esc(v.hint)})` : ''}</option>`).join(''));
+    $('#fm_video_resolution').html(['<option value="">Model default</option>', ...(variant?.resolutions || []).map(r =>
+        `<option value="${esc(r)}" ${r === s.videoResolution ? 'selected' : ''}>${esc(r)}</option>`)].join(''));
+    if (variant) {
+        const durs = variant.durations;
+        const hint = variant.duration_mode === 'options' ? `allowed: ${durs.join(', ')} s` : `${durs[0]}–${durs[1]} s`;
+        $('#fm_video_duration_hint').text(`${hint}${variant.last_frame ? ' · supports first+last frame' : ''}`);
     }
+}
 
-    // Wait for page load
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
+async function refreshBridgeStatus({ quiet = true } = {}) {
+    const $s = $('#fm_status');
+    try {
+        const caps = await getCapabilities(true);
+        const configuredVideo = caps.video.providers.filter(p => p.configured).map(p => p.label);
+        $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · video: ${configuredVideo.join(', ') || 'none'} · helper: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
+        // Keep the chosen provider valid.
+        const s = settings();
+        if (!caps.video.providers.find(p => p.id === s.videoProvider)?.configured) {
+            const first = caps.video.providers.find(p => p.configured && p.id !== 'mock') || caps.video.providers.find(p => p.configured);
+            if (first) { s.videoProvider = first.id; s.videoFamily = first.families[0]?.id || ''; s.videoVariant = ''; save(); }
+        }
+        renderVideoPickers();
+        if (!quiet) toastr.success('Bridge connected.', 'Media Studio');
+    } catch (err) {
+        $s.removeClass('fm-ok').addClass('fm-bad').text(err?.message || 'Not connected');
+        if (!quiet) toastr.error(err?.message || String(err), 'Media Studio');
     }
+}
 
-})();
+async function loadHelperModels(refresh = false) {
+    const s = settings();
+    const $sel = $('#fm_helper_model');
+    try {
+        const data = await bridge(`/helper/models${refresh ? '?refresh=true' : ''}`, { timeout: 40000 });
+        const filter = String($('#fm_helper_filter').val() || '').toLowerCase();
+        const models = data.models.filter(m => !filter || m.id.toLowerCase().includes(filter) || String(m.name).toLowerCase().includes(filter));
+        const price = (m) => (m.input_price != null ? ` · $${m.input_price}/$${m.output_price} per M` : '');
+        $sel.html([`<option value="">Bridge default (${esc(data.default_model)})</option>`,
+            ...models.slice(0, 400).map(m => `<option value="${esc(m.id)}" ${m.id === s.helperModel ? 'selected' : ''}>${esc(m.id)}${price(m)}</option>`)].join(''));
+        if (s.helperModel && !models.some(m => m.id === s.helperModel)) $sel.append(`<option value="${esc(s.helperModel)}" selected>${esc(s.helperModel)}</option>`);
+    } catch (err) {
+        $sel.html(`<option value="${esc(s.helperModel)}">${esc(s.helperModel || 'Bridge default')}</option>`);
+    }
+}
+
+function bindSettings() {
+    const s = settings();
+    const $root = $('#flux_media_settings');
+    $root.find('[data-fm]').each((_, el) => {
+        const k = el.dataset.fm;
+        if (el.type === 'checkbox') el.checked = !!s[k];
+        else el.value = s[k];
+    });
+    $('#fm_bridge_url').attr('placeholder', bridgeBase());
+
+    $root.on('input change', '[data-fm]', (e) => {
+        const el = e.target;
+        const k = el.dataset.fm;
+        let v = el.type === 'checkbox' ? el.checked : el.value;
+        if (el.type === 'number' || el.type === 'range') v = Number(v);
+        if (s[k] === v) return;
+        s[k] = v;
+        save();
+        if (k === 'bridgeUrl' || k === 'bridgeToken') return;
+        if (k === 'videoProvider') { s.videoFamily = videoSelection().provider?.families?.[0]?.id || ''; s.videoVariant = ''; s.videoResolution = ''; }
+        if (k === 'videoFamily') { s.videoVariant = ''; s.videoResolution = ''; }
+        if (k === 'videoVariant') { s.videoResolution = ''; }
+        if (k.startsWith('video')) renderVideoPickers();
+    });
+    $('#fm_bridge_url, #fm_bridge_token').on('change', async () => {
+        await refreshBridgeStatus({ quiet: false });
+        loadHelperModels();
+    });
+    $('#fm_test').on('click', () => refreshBridgeStatus({ quiet: false }));
+    $('#fm_helper_refresh').on('click', () => loadHelperModels(true));
+    $('#fm_helper_filter').on('input', () => loadHelperModels(false));
+    $('#fm_helper_test').on('click', async () => {
+        const $out = $('#fm_helper_out').text('Asking the helper…');
+        try {
+            const r = await bridge('/helper/voice-tags', { method: 'POST', body: { text: 'Wait, you actually came all this way just to see me?', char: 'Test', model: s.helperModel || undefined } });
+            $out.text(r.error ? `Error: ${r.error}` : `Helper says: ${r.text}`);
+        } catch (err) {
+            $out.text(`Error: ${err?.message || err}`);
+        }
+    });
+    $('#fm_usage').text(`Today: ${usage().images} images, ${usage().videos} videos`);
+}
+
+// ---------------------------------------------------------------------------
+// Buttons: per message and on the character card
+// ---------------------------------------------------------------------------
+
+const MES_BUTTONS = '<div title="Media Studio: generate image" class="mes_button fm_mes_image fa-solid fa-image"></div>'
+    + '<div title="Media Studio: generate video" class="mes_button fm_mes_video fa-solid fa-film"></div>';
+
+function addMessageButtons() {
+    $('#message_template .mes_buttons .extraMesButtons').prepend(MES_BUTTONS);
+    $('#chat .mes .extraMesButtons').each(function () {
+        if (!$(this).find('.fm_mes_image').length) $(this).prepend(MES_BUTTONS);
+    });
+    $(document).on('click', '.fm_mes_image', function () {
+        generateImage(Number($(this).closest('.mes').attr('mesid')), { origin: 'manual' });
+    });
+    $(document).on('click', '.fm_mes_video', async function () {
+        const id = Number($(this).closest('.mes').attr('mesid'));
+        const prompts = await promptsForVideo(id);
+        generateVideo(id, { ...prompts, origin: 'manual' });
+    });
+}
+
+function refreshCharButton() {
+    const c = ctx();
+    const editing = c.characterId !== undefined && c.characterId !== null && c.menuType !== 'create';
+    $('#fm_char_button').toggleClass('displayNone', !editing);
+}
+
+const galleryDeps = {
+    getCharMedia,
+    setCharMedia,
+    async loraStatus(chid) {
+        const ch = ctx().characters[chid];
+        try {
+            const r = await bridge('/media/lora-status', { method: 'POST', body: { names: [ch.name], character_prompts: { [ch.name]: sdPrompt(ch) } }, timeout: 15000 });
+            return !!r.characters?.[ch.name];
+        } catch {
+            return null;
+        }
+    },
+    async generateAvatar(chid, prompt) {
+        const s = settings();
+        const ch = ctx().characters[chid];
+        const res = await bridge('/media/image', {
+            method: 'POST',
+            body: { prompt, character_name: ch.name, character_prompts: { [ch.name]: sdPrompt(ch) }, visible_characters: [ch.name],
+                mode: 'lora', avatars: [], width: 832, height: 1216, steps: Number(s.steps), cfg_scale: Number(s.cfg) },
+        });
+        const b64 = res.images?.[0];
+        if (!b64) throw new Error('The bridge returned no image');
+        return await saveFile(b64, imageFormat(b64), ch.name, `avatar_${Date.now()}`);
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Slash commands
+// ---------------------------------------------------------------------------
+
+function lastCharacterMessageId() {
+    const chat = ctx().chat;
+    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user && !chat[i].is_system) return i;
+    return -1;
+}
+
+function registerSlashCommands() {
+    const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx();
+    if (!SlashCommandParser?.addCommandObject) return;
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'fmimage',
+        callback: async (_a, prompt) => { const id = lastCharacterMessageId(); if (id >= 0) await generateImage(id, { prompt: String(prompt || ''), origin: 'manual' }); return ''; },
+        unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional scene prompt', typeList: [ARGUMENT_TYPE.STRING] })],
+        helpString: 'Media Studio: generate an image for the last character message.',
+    }));
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'fmvideo',
+        callback: async (_a, motion) => {
+            const id = lastCharacterMessageId();
+            if (id < 0) return '';
+            const prompts = motion ? { motion: String(motion) } : await promptsForVideo(id);
+            await generateVideo(id, { ...prompts, origin: 'manual' });
+            return '';
+        },
+        unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional motion prompt', typeList: [ARGUMENT_TYPE.STRING] })],
+        helpString: 'Media Studio: generate a video for the last character message (uses its image as the first frame).',
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+jQuery(async () => {
+    const c = ctx();
+    const et = c.eventTypes;
+    settings();
+    migrateLegacyConfig();
+
+    const html = await (await fetch(new URL('./settings.html', import.meta.url))).text();
+    $('#extensions_settings2').append(html);
+    bindSettings();
+
+    addMessageButtons();
+    $('.form_create_bottom_buttons_block').first().append('<div id="fm_char_button" class="menu_button fa-solid fa-images displayNone" title="Media gallery & avatars"></div>');
+    $('#fm_char_button').on('click', () => openCharacterMedia(ctx().characterId, galleryDeps));
+    refreshCharButton();
+
+    c.eventSource.on(et.MESSAGE_RECEIVED, (id, type) => onMessageReceived(id, type));
+    c.eventSource.on(et.MESSAGE_SENT, () => { noteArmed = true; });
+    c.eventSource.on(et.CHAT_CHANGED, () => {
+        ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
+        noteArmed = false;
+        refreshCharButton();
+    });
+    c.eventSource.on(et.CHARACTER_EDITOR_OPENED, refreshCharButton);
+
+    registerSlashCommands();
+    await refreshBridgeStatus();
+    loadHelperModels();
+
+    globalThis.MediaStudio = { settings, generateImage, generateVideo, onMessageReceived, getCharMedia, setCharMedia, AVATAR_SLOTS };
+    console.log(TAG, 'loaded');
+});

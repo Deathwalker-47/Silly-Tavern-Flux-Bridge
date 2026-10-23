@@ -1934,19 +1934,12 @@ class ReplicateClient(ProviderClient):
         if not self.api_token:
             raise ValueError("REPLICATE_API_TOKEN not configured")
         # Flux dev has no negative prompt input; the negative is dropped like on Runware's guidance-only models.
-        body = {"input": self.build_input(prompt, loras, params)}
-        headers = {"Authorization": f"Bearer {self.api_token}"}
-        logger.info(f"🔁 [Replicate] Generating with {len(body['input'].get('hf_loras', []))} LoRAs, "
-                    f"aspect {body['input']['aspect_ratio']}, steps {body['input']['num_inference_steps']}")
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{self.API}/models/{Config.REPLICATE_FLUX_MODEL}/predictions",
-                json=body,
-                headers={**headers, "Content-Type": "application/json", "Prefer": "wait=60"},
-            )
-        if response.status_code >= 300:
-            raise Exception(f"Replicate API error {response.status_code}: {response.text[:300]}")
-        output_url = await ms.replicate_wait(response.json(), headers, timeout=240)
+        inp = self.build_input(prompt, loras, params)
+        logger.info(f"🔁 [Replicate] Generating with {len(inp.get('hf_loras', []))} LoRAs, "
+                    f"aspect {inp['aspect_ratio']}, steps {inp['num_inference_steps']}")
+        # flux-dev-multi-lora is a community model: replicate_create falls back to its version id.
+        prediction = await ms.replicate_create(Config.REPLICATE_FLUX_MODEL, inp, self.api_token, prefer_wait=60)
+        output_url = await ms.replicate_wait(prediction, {"Authorization": f"Bearer {self.api_token}"}, timeout=240)
         image_bytes = await ms.download(output_url)
         logger.info(f"✅ [Replicate] Image resolved ({len(image_bytes)} bytes)")
         return image_bytes
