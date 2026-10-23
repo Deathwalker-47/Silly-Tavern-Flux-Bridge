@@ -70,6 +70,13 @@
                 <label>Resolution <select id="fm_video_resolution" data-fm="videoResolution" class="text_pole"></select></label>
             </div>
             <small id="fm_video_duration_hint" class="fm-hint"></small>
+            <label id="fm_sogni_network_row">Sogni queue
+                <select id="fm_sogni_network" data-fm="sogniNetwork" class="text_pole">
+                    <option value="">Bridge default</option>
+                    <option value="fast">Fast: dedicated GPUs, full price</option>
+                    <option value="relaxed">Relaxed: cheaper, can wait several minutes</option>
+                </select>
+            </label>
             <label class="checkbox_label"><input type="checkbox" data-fm="videoAudio"> Generate audio (where the model can)</label>
             <label class="checkbox_label"><input type="checkbox" data-fm="useTwoImages"> When a message has 2+ images, animate from the first to the last</label>
             <small class="fm-hint">Safety checkers are switched off for every provider that offers the switch. Closed vendor models (Seedance, MiniMax via Runware/Replicate) may still filter on their side.</small>

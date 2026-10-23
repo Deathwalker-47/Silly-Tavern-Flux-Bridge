@@ -60,7 +60,9 @@ class MediaConfig:
     SOGNI_API_KEY = os.getenv("SOGNI_API_KEY", "")
     # Sogni wants one stable app id per installation, never a fresh one per run.
     SOGNI_APP_ID = os.getenv("SOGNI_APP_ID", "") or str(uuid.uuid5(uuid.NAMESPACE_DNS, f"flux-lora-bridge.{socket.gethostname()}"))
+    # "fast" = dedicated GPUs at full price; "relaxed" = cheaper queue that can wait a long time.
     SOGNI_NETWORK = os.getenv("SOGNI_NETWORK", "fast")
+    SOGNI_RELAXED_TIMEOUT = int(os.getenv("SOGNI_RELAXED_TIMEOUT", 3600))  # seconds, relaxed jobs only
     # Default LoRA for every MiniMax H3 job on Sogni: VBVR Video Reasoning (prompt adherence).
     SOGNI_H3_LORA = os.getenv("SOGNI_H3_LORA", "h3-vbvr-video-reasoning")
     SOGNI_H3_LORA_STRENGTH = float(os.getenv("SOGNI_H3_LORA_STRENGTH", 0.8))
@@ -298,7 +300,8 @@ def public_catalog() -> Dict[str, Any]:
             "configured": provider_configured(name),
             "families": families,
         })
-    return {"families": VIDEO_FAMILIES, "providers": providers}
+    return {"families": VIDEO_FAMILIES, "providers": providers,
+            "sogni_network": (MediaConfig.SOGNI_NETWORK or "fast").lower()}
 
 
 def find_variant(provider: str, family: str, variant_id: Optional[str] = None) -> VideoVariant:
@@ -397,9 +400,10 @@ class VideoRequest:
     resolution: str = "480p"
     seed: int = -1
     audio: bool = False
+    sogni_network: str = ""   # "fast" | "relaxed"; empty = SOGNI_NETWORK
 
 
-Report = Callable[[str, str], None]  # (status, human message)
+Report =Callable[[str, str], None]  # (status, human message)
 
 
 class VideoProvider:
@@ -554,12 +558,22 @@ class SogniVideo(VideoProvider):
     """Sogni Supernet through the official SDK: the REST workflow API can't address
     exact model ids such as the 10Eros fine-tune, the SDK can."""
     name = "sogni"
+    NETWORKS = ("fast", "relaxed")
+
+    @classmethod
+    def network(cls, req: VideoRequest) -> str:
+        """Fast = dedicated GPUs, full price; relaxed = cheaper queue, can wait minutes."""
+        for choice in (req.sogni_network, MediaConfig.SOGNI_NETWORK):
+            if (choice or "").lower() in cls.NETWORKS:
+                return choice.lower()
+        return "fast"
 
     def build_params(self, req: VideoRequest) -> Dict[str, Any]:
         v = req.variant
         model_id = v.id
         params: Dict[str, Any] = {
             "type": "video",
+            "network": self.network(req),
             "modelId": model_id,
             "positivePrompt": req.prompt,
             "numberOfMedia": 1,
@@ -586,14 +600,16 @@ class SogniVideo(VideoProvider):
         from sogni_client import SogniClient  # imported lazily: optional dependency
 
         params = self.build_params(req)
-        report("rendering", f"Rendering on Sogni ({req.variant.label})")
+        queue = "" if params["network"] == "fast" else ", relaxed queue: can take a while"
+        report("rendering", f"Rendering on Sogni ({req.variant.label}{queue})")
         async with await SogniClient.create(
             api_key=MediaConfig.SOGNI_API_KEY,
             app_id=MediaConfig.SOGNI_APP_ID,
-            network=MediaConfig.SOGNI_NETWORK,
+            network=params["network"],
         ) as sogni:
             project = await sogni.projects.create(params)
-            urls = await asyncio.wait_for(project.wait_for_completion(), timeout=MediaConfig.VIDEO_JOB_TIMEOUT)
+            timeout = MediaConfig.VIDEO_JOB_TIMEOUT if params["network"] == "fast" else MediaConfig.SOGNI_RELAXED_TIMEOUT
+            urls = await asyncio.wait_for(project.wait_for_completion(), timeout=timeout)
         if not urls:
             raise RuntimeError("Sogni finished without a result")
         report("downloading", "Downloading video")
@@ -864,7 +880,9 @@ class VideoJobs:
     async def _run(self, job: VideoJob, run: Callable[[VideoJob], Awaitable[bytes]]):
         started = time.time()
         try:
-            data = await asyncio.wait_for(run(job), timeout=MediaConfig.VIDEO_JOB_TIMEOUT + 120)
+            # Outer safety net; each provider enforces its own, tighter deadline.
+            limit = max(MediaConfig.VIDEO_JOB_TIMEOUT, MediaConfig.SOGNI_RELAXED_TIMEOUT)
+            data = await asyncio.wait_for(run(job), timeout=limit + 120)
             if not data or len(data) < 1000:
                 raise RuntimeError("provider returned an empty video")
             job.video_id = video_store.add(data)

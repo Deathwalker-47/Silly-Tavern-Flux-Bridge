@@ -2518,6 +2518,7 @@ class VideoGenerateRequest(BaseModel):
     resolution: Optional[str] = Field(default=None)
     seed: int = Field(default=-1)
     audio: bool = Field(default=False)
+    sogni_network: str = Field(default="", description="Sogni only: fast | relaxed (cheaper, slower); empty = SOGNI_NETWORK")
 
 
 class HelperDecideRequest(BaseModel):
@@ -3416,6 +3417,7 @@ async def video_generate(request: VideoGenerateRequest, http_request: Request = 
             provider=provider, family=request.family, variant=variant, prompt=prompt, image=image,
             last_image=last, negative_prompt=request.negative_prompt or "", duration=duration,
             resolution=resolution, seed=request.seed, audio=request.audio,
+            sogni_network=request.sogni_network,
         )
         return await ms.PROVIDERS[provider].generate(vreq, report)
 

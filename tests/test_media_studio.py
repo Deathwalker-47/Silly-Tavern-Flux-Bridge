@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import types
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -252,6 +253,14 @@ class SogniParamTests(unittest.TestCase):
 
     def test_non_h3_models_get_no_lora(self):
         self.assertNotIn("loras", ms.SogniVideo().build_params(request("sogni", "wan-2.2")))
+
+    def test_network_follows_request_then_env(self):
+        build = ms.SogniVideo().build_params
+        with unittest.mock.patch.object(ms.MediaConfig, "SOGNI_NETWORK", "relaxed"):
+            self.assertEqual(build(request("sogni", "ltx-2.3"))["network"], "relaxed")
+            self.assertEqual(build(request("sogni", "ltx-2.3", sogni_network="fast"))["network"], "fast")
+        with unittest.mock.patch.object(ms.MediaConfig, "SOGNI_NETWORK", "bogus"):
+            self.assertEqual(build(request("sogni", "ltx-2.3", sogni_network="nope"))["network"], "fast")
 
 
 class ReplicatePayloadTests(unittest.TestCase):

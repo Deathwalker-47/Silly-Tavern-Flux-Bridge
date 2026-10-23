@@ -34,6 +34,7 @@ const DEFAULTS = Object.freeze({
     videoDuration: 5,
     videoResolution: '',
     videoAudio: false,
+    sogniNetwork: '',
     useTwoImages: true,
     debug: false,
 });
@@ -276,6 +277,7 @@ async function generateVideo(messageId, { motion = '', imagePrompt = '', caption
             duration: Number(s.videoDuration) || 5,
             resolution: s.videoResolution || undefined,
             audio: !!s.videoAudio,
+            sogni_network: s.videoProvider === 'sogni' ? s.sogniNetwork || undefined : undefined,
         };
         if (images.length) {
             // Animate the message's own image; with 2+ images, travel from the first to the last.
@@ -420,6 +422,8 @@ function renderVideoPickers() {
         `<option value="${esc(v.id)}" ${v.id === variant?.id ? 'selected' : ''}>${esc(v.label)}${v.hint ? ` (${esc(v.hint)})` : ''}</option>`).join(''));
     $('#fm_video_resolution').html(['<option value="">Model default</option>', ...(variant?.resolutions || []).map(r =>
         `<option value="${esc(r)}" ${r === s.videoResolution ? 'selected' : ''}>${esc(r)}</option>`)].join(''));
+    $('#fm_sogni_network_row').toggleClass('displayNone', s.videoProvider !== 'sogni');
+    $('#fm_sogni_network option[value=""]').text(`Bridge default (${caps.video.sogni_network || 'fast'})`);
     if (variant) {
         const durs = variant.durations;
         const hint = variant.duration_mode === 'options' ? `allowed: ${durs.join(', ')} s` : `${durs[0]}–${durs[1]} s`;
