@@ -54,7 +54,10 @@ def install_test_stubs():
     responses_mod.JSONResponse = JSONResponse
 
     pydantic_mod = types.ModuleType("pydantic")
-    class BaseModel: pass
+    class BaseModel:
+        def __init__(self, **kw):
+            for key, value in kw.items():
+                setattr(self, key, value)
     def Field(default=None, **kwargs): return default
     pydantic_mod.BaseModel = BaseModel
     pydantic_mod.Field = Field
@@ -152,9 +155,9 @@ class CatalogTests(unittest.TestCase):
         wan22 = ms.find_variant("nanogpt", "wan-2.2")       # options 5 / 8
         self.assertEqual(wan22.pick_duration(6), 5)
         self.assertEqual(wan22.pick_duration(7.5), 8)
-        ltx = ms.find_variant("runware", "ltx-2.3")         # range 1..20
-        self.assertEqual(ltx.pick_duration(30), 20)
-        self.assertEqual(ltx.pick_duration(None), 5)
+        wan27 = ms.find_variant("runware", "wan-2.7")       # range 2..15
+        self.assertEqual(wan27.pick_duration(30), 15)
+        self.assertEqual(wan27.pick_duration(None), 5)
 
     def test_unknown_resolution_falls_back_to_default(self):
         h3 = ms.find_variant("runware", "minimax-h3")
@@ -193,12 +196,31 @@ class RunwarePayloadTests(unittest.TestCase):
         self.assertNotIn("width", task)
 
     @unittest.skipUnless(HAS_PILLOW, "needs Pillow to read the keyframe size")
-    def test_ltx_uses_width_height_matching_the_keyframe_orientation(self):
-        req = request("runware", "ltx-2.3", resolution="480p")
+    def test_ltx25_uses_exact_hd_size_matching_the_keyframe(self):
+        req = request("runware", "ltx-2.5", resolution="720p")
         task = ms.RunwareVideo().build_task(req, "u1", None, "t")
-        self.assertEqual((task["width"], task["height"]), (512, 896))  # portrait keyframe
+        self.assertEqual(task["model"], "lightricks:ltx@2.5-fast")
+        self.assertEqual((task["width"], task["height"]), (720, 1280))  # portrait keyframe, true 9:16
         self.assertNotIn("resolution", task)
+        self.assertEqual(task["duration"], 6)                           # 5 s snaps to the 6/8/10 options
+        self.assertEqual(task["settings"], {"audio": False})
         self.assertEqual(len(task["inputs"]["frameImages"]), 1)
+        landscape = ms.RunwareVideo().build_task(request("runware", "ltx-2.5", image=LANDSCAPE, resolution="1080p", audio=True), "u1", None, "t")
+        self.assertEqual((landscape["width"], landscape["height"], landscape["settings"]["audio"]), (1920, 1080, True))
+
+    def test_ltx23_is_not_offered_on_runware(self):
+        # Every LTX-2.3 job failed on Runware with a bare inferenceError; other providers keep it.
+        self.assertNotIn("ltx-2.3", ms.VIDEO_CATALOG["runware"])
+        self.assertEqual(next(iter(ms.VIDEO_CATALOG["runware"])), "ltx-2.5")
+        for provider in ("nanogpt", "sogni"):
+            self.assertIn("ltx-2.3", ms.VIDEO_CATALOG[provider])
+        with self.assertRaises(ValueError):
+            ms.find_variant("runware", "ltx-2.3")
+
+    def test_hd_sizes_are_exact_16_9(self):
+        for tier, sizes in ms.HD_SIZES.items():
+            for orient, (w, h) in sizes.items():
+                self.assertEqual(max(w, h) * 9, min(w, h) * 16, f"{tier}/{orient} = {w}x{h}")
 
     def test_every_preset_size_is_a_multiple_of_64(self):
         # Runware's real API rejected 480 px: "Video width must be ... in multiples of 64".
@@ -261,6 +283,42 @@ class SogniParamTests(unittest.TestCase):
             self.assertEqual(build(request("sogni", "ltx-2.3", sogni_network="fast"))["network"], "fast")
         with unittest.mock.patch.object(ms.MediaConfig, "SOGNI_NETWORK", "bogus"):
             self.assertEqual(build(request("sogni", "ltx-2.3", sogni_network="nope"))["network"], "fast")
+
+    def test_timeout_cancels_the_project(self):
+        # The SDK keeps rendering (and billing) after a timeout unless the project is cancelled.
+        cancelled = []
+
+        class Project:
+            id = "p1"
+
+            async def wait_for_completion(self, timeout=None):
+                raise asyncio.TimeoutError()
+
+            async def cancel(self):
+                cancelled.append(self.id)
+
+        class Client:
+            @classmethod
+            async def create(cls, **_kw):
+                client = cls()
+
+                async def create_project(_params):
+                    return Project()
+                client.projects = types.SimpleNamespace(create=create_project)
+                return client
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+        fake = types.ModuleType("sogni_client")
+        fake.SogniClient = Client
+        with unittest.mock.patch.dict(sys.modules, {"sogni_client": fake}):
+            with self.assertRaises(asyncio.TimeoutError):
+                run(ms.SogniVideo().generate(request("sogni", "minimax-h3"), lambda *_: None))
+        self.assertEqual(cancelled, ["p1"])
 
 
 class ReplicatePayloadTests(unittest.TestCase):

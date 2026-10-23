@@ -29,7 +29,7 @@ const DEFAULTS = Object.freeze({
     helperModel: '',
     notifyCharacter: true,
     videoProvider: 'runware',
-    videoFamily: 'ltx-2.3',
+    videoFamily: 'ltx-2.5',
     videoVariant: '',
     videoDuration: 5,
     videoResolution: '',
@@ -442,6 +442,11 @@ async function refreshBridgeStatus({ quiet = true } = {}) {
         if (!caps.video.providers.find(p => p.id === s.videoProvider)?.configured) {
             const first = caps.video.providers.find(p => p.configured && p.id !== 'mock') || caps.video.providers.find(p => p.configured);
             if (first) { s.videoProvider = first.id; s.videoFamily = first.families[0]?.id || ''; s.videoVariant = ''; save(); }
+        }
+        // ...and the model, if the bridge dropped it for that provider (e.g. LTX-2.3 on Runware).
+        const families = caps.video.providers.find(p => p.id === s.videoProvider)?.families || [];
+        if (families.length && !families.some(f => f.id === s.videoFamily)) {
+            s.videoFamily = families[0].id; s.videoVariant = ''; s.videoResolution = ''; save();
         }
         renderVideoPickers();
         if (!quiet) toastr.success('Bridge connected.', 'Media Studio');

@@ -2507,7 +2507,7 @@ class LoraStatusRequest(BaseModel):
 
 class VideoGenerateRequest(BaseModel):
     provider: str = Field(default="runware")
-    family: str = Field(default="ltx-2.3", description="ltx-2.3 | wan-2.2 | wan-2.7 | seedance-1.5 | seedance-2.0 | minimax-h3")
+    family: str = Field(default="ltx-2.5", description="ltx-2.3 | ltx-2.5 | wan-2.2 | wan-2.7 | seedance-1.5 | seedance-2.0 | minimax-h3")
     variant: Optional[str] = Field(default=None, description="Exact model id; default = the provider's first variant")
     prompt: str = Field(default="", description="Motion prompt")
     negative_prompt: str = Field(default="")
@@ -2518,7 +2518,7 @@ class VideoGenerateRequest(BaseModel):
     resolution: Optional[str] = Field(default=None)
     seed: int = Field(default=-1)
     audio: bool = Field(default=False)
-    sogni_network: str = Field(default="", description="Sogni only: fast | relaxed (cheaper, slower); empty = SOGNI_NETWORK")
+    sogni_network: str = Field(default="", description="Sogni only: fast (billed) | relaxed (free, slow); empty = SOGNI_NETWORK")
 
 
 class HelperDecideRequest(BaseModel):

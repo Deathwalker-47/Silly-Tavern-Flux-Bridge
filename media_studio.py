@@ -60,7 +60,7 @@ class MediaConfig:
     SOGNI_API_KEY = os.getenv("SOGNI_API_KEY", "")
     # Sogni wants one stable app id per installation, never a fresh one per run.
     SOGNI_APP_ID = os.getenv("SOGNI_APP_ID", "") or str(uuid.uuid5(uuid.NAMESPACE_DNS, f"flux-lora-bridge.{socket.gethostname()}"))
-    # "fast" = dedicated GPUs at full price; "relaxed" = cheaper queue that can wait a long time.
+    # "fast" = dedicated GPUs, billed; "relaxed" = free queue that can wait a long time.
     SOGNI_NETWORK = os.getenv("SOGNI_NETWORK", "fast")
     SOGNI_RELAXED_TIMEOUT = int(os.getenv("SOGNI_RELAXED_TIMEOUT", 3600))  # seconds, relaxed jobs only
     # Default LoRA for every MiniMax H3 job on Sogni: VBVR Video Reasoning (prompt adherence).
@@ -93,6 +93,7 @@ class MediaConfig:
 
 VIDEO_FAMILIES: Dict[str, str] = {
     "ltx-2.3": "LTX-2.3",
+    "ltx-2.5": "LTX-2.5",
     "wan-2.2": "Wan 2.2",
     "wan-2.7": "Wan 2.7",
     "seedance-1.5": "Seedance 1.5",
@@ -161,8 +162,11 @@ def V(id: str, label: str, res: List[str], default_res: Optional[str] = None, *,
 # A model a provider doesn't offer is simply absent, so that menu just has fewer options.
 VIDEO_CATALOG: Dict[str, Dict[str, List[VideoVariant]]] = {
     "runware": {
-        "ltx-2.3": [V("lightricks:ltx@2.3-fast", "LTX-2.3 Fast", ["480p", "720p", "1080p"], "720p",
-                      dur=(1, 20), last=True, hint="$0.03/s · ~46s", sizing="wh")],
+        # No LTX-2.3 here: lightricks:ltx@2.3-fast and ltx@2.3 fail every job with a bare
+        # "inferenceError" (2026-10-23, with or without a frame, at any size or frame count).
+        # LTX-2.5 Fast only takes exact 16:9 / 9:16 sizes and 6, 8 or 10 s when a size is set.
+        "ltx-2.5": [V("lightricks:ltx@2.5-fast", "LTX-2.5 Fast", ["720p", "1080p"], "720p",
+                      options=[6, 8, 10], last=True, hint="$0.09/s · ~25s", sizing="hd", audio_setting=True)],
         "wan-2.7": [V("alibaba:wan@2.7", "Wan 2.7", ["720p", "1080p"], "720p",
                       dur=(2, 15), last=True, hint="$0.10/s · ~3 min", sizing="resolution")],
         "seedance-1.5": [V("bytedance:seedance@1.5-pro", "Seedance 1.5 Pro", ["480p", "720p", "1080p"], "480p",
@@ -361,6 +365,18 @@ def wh_for(resolution: str, width: int, height: int) -> Tuple[int, int]:
     return table[orientation(width, height)]
 
 
+# Models that accept only true 16:9 / 9:16 frames (no square, no rounding to 64).
+HD_SIZES = {
+    "720p": {"landscape": (1280, 720), "portrait": (720, 1280)},
+    "1080p": {"landscape": (1920, 1080), "portrait": (1080, 1920)},
+}
+
+
+def hd_for(resolution: str, width: int, height: int) -> Tuple[int, int]:
+    table = HD_SIZES.get(resolution.lower(), HD_SIZES["720p"])
+    return table["portrait" if height > width else "landscape"]
+
+
 def sniff_image_mime(data: bytes) -> str:
     if data[:3] == b"\xff\xd8\xff":
         return "image/jpeg"
@@ -459,11 +475,14 @@ class RunwareVideo(VideoProvider):
             # No "safety" object: Runware's check is opt-in, and the live API rejects
             # safety.checkContent for these models ("Allowed keys are: 'mode'").
         }
-        if v.extra.get("sizing") == "wh":
+        sizing = v.extra.get("sizing")
+        if sizing in ("wh", "hd"):
             w, h = image_size(req.image)
-            task["width"], task["height"] = wh_for(req.resolution, w, h)
+            task["width"], task["height"] = (wh_for if sizing == "wh" else hd_for)(req.resolution, w, h)
         else:
             task["resolution"] = req.resolution
+        if v.extra.get("audio_setting"):
+            task["settings"] = {"audio": bool(req.audio)}
         if req.negative_prompt:
             task["negativePrompt"] = req.negative_prompt
         if req.seed is not None and req.seed >= 0:
@@ -562,7 +581,7 @@ class SogniVideo(VideoProvider):
 
     @classmethod
     def network(cls, req: VideoRequest) -> str:
-        """Fast = dedicated GPUs, full price; relaxed = cheaper queue, can wait minutes."""
+        """Fast = dedicated GPUs, billed; relaxed = free queue, can wait an hour or more."""
         for choice in (req.sogni_network, MediaConfig.SOGNI_NETWORK):
             if (choice or "").lower() in cls.NETWORKS:
                 return choice.lower()
@@ -609,7 +628,16 @@ class SogniVideo(VideoProvider):
         ) as sogni:
             project = await sogni.projects.create(params)
             timeout = MediaConfig.VIDEO_JOB_TIMEOUT if params["network"] == "fast" else MediaConfig.SOGNI_RELAXED_TIMEOUT
-            urls = await asyncio.wait_for(project.wait_for_completion(), timeout=timeout)
+            try:
+                urls = await project.wait_for_completion(timeout=timeout)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # Giving up doesn't stop the render on the Supernet: cancel it so a fast job
+                # isn't billed and a relaxed one doesn't keep its queue slot.
+                try:
+                    await asyncio.wait_for(project.cancel(), timeout=15)
+                except Exception as e:  # best effort
+                    logger.warning(f"🎬 [Sogni] could not cancel project {getattr(project, 'id', '?')}: {e}")
+                raise
         if not urls:
             raise RuntimeError("Sogni finished without a result")
         report("downloading", "Downloading video")
