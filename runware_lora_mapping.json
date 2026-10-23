@@ -1,8 +1,4 @@
 {
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/imagination_v777_flux_0000b_lora.safetensors": {
-    "runware_id": "deathwalker:f75e759e8548@1",
-    "uploaded_at": "2026-01-03T00:02:24.686042"
-  },
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_24_image.safetensors": {
     "runware_id": "deathwalker:5f2cc9ba4498@1",
     "uploaded_at": "2026-01-03T01:16:06.351094"
@@ -42,10 +38,6 @@
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_woman_natural_beauty(indianwoman).safetensors": {
     "runware_id": "deathwalker:0f7315a9cc0c@1",
     "uploaded_at": "2026-01-03T07:46:56.069149"
-  },
-  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/lip_biting(lip%20biting).safetensors": {
-    "runware_id": "deathwalker:58fbbb80a6be@1",
-    "uploaded_at": "2026-01-24T20:37:17.859286"
   },
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Archana(milf).safetensors": {
     "runware_id": "deathwalker:fcf7d4371309@1",
@@ -102,5 +94,9 @@
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Titanforge_v1.safetensors": {
     "runware_id": "deathwalker:38745683@1",
     "uploaded_at": "2026-01-31T11:04:41.927887"
+  },
+  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_lip_biting(lip%20biting).safetensors": {
+    "runware_id": "deathwalker:20a079f34467@1",
+    "uploaded_at": "2026-10-23T22:38:56.744979"
   }
 }

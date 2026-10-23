@@ -67,8 +67,15 @@ def upload_lora_to_runware(hf_url, runware_api_key):
     }
     
     try:
+        # Runware accepts a dead link ("model re-processing") and the LoRA just never
+        # becomes usable, so catch renamed/deleted files here with a clear message.
+        if hf_url.startswith(("http://", "https://")):
+            probe = httpx.head(hf_url, follow_redirects=True, timeout=15).status_code
+            if probe in (404, 410):
+                raise Exception(f"LoRA file not found at its URL (HTTP {probe}); was it renamed or deleted?")
+
         logger.info(f"🌐 [Runware] Uploading {model_name} with AIR: {air_id}")
-        
+
         # httpx, not requests: requests isn't a dependency, and the ImportError used to
         # be swallowed by the caller, so no new LoRA ever reached Runware.
         resp = httpx.post(

@@ -541,7 +541,7 @@
     },
     "lip_biting": {
       "name": "Lip Biting",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/lip_biting(lip%20biting).safetensors",
+      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_lip_biting(lip%20biting).safetensors",
       "weight": 0.8,
       "rank": 52,
       "category": "expression",

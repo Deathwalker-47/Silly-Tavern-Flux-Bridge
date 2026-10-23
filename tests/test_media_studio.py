@@ -530,16 +530,27 @@ class RunwareLoraMappingTests(unittest.TestCase):
         self.assertEqual(calls, [0, 2])  # second call served from the cache
 
     def test_upload_uses_httpx_and_surfaces_errors(self):
+        ok = lambda *a, **kw: types.SimpleNamespace(status_code=200)  # noqa: E731  (HEAD on the source file)
         reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"errors": [{"message": "bad file"}]})
-        fake = types.SimpleNamespace(post=lambda *a, **kw: reply, TimeoutException=TimeoutError)
+        fake = types.SimpleNamespace(head=ok, post=lambda *a, **kw: reply, TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake):
             with self.assertRaisesRegex(Exception, "bad file"):
                 bridge.upload_lora_to_runware(self.URL, "key")
 
         def slow(*_a, **_kw):
             raise TimeoutError()
-        with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(post=slow, TimeoutException=TimeoutError)):
+        with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(head=ok, post=slow, TimeoutException=TimeoutError)):
             self.assertTrue(bridge.upload_lora_to_runware(self.URL, "key").startswith("deathwalker:"))
+
+    def test_upload_refuses_a_deleted_source_file(self):
+        # Runware answers "model re-processing" for a dead link and the LoRA never works.
+        posted = []
+        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=404),
+                                     post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake):
+            with self.assertRaisesRegex(Exception, "HTTP 404"):
+                bridge.upload_lora_to_runware(self.URL, "key")
+        self.assertEqual(posted, [])
 
 
 class AvatarModeTests(unittest.TestCase):
