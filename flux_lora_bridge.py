@@ -37,8 +37,6 @@ def generate_air_id_from_url(hf_url):
 
 def upload_lora_to_runware(hf_url, runware_api_key):
     """Upload LoRA to Runware by providing download URL - SYNC VERSION."""
-    import requests
-    
     # Generate proper AIR identifier
     air_id, url_hash = generate_air_id_from_url(hf_url)
     
@@ -69,33 +67,46 @@ def upload_lora_to_runware(hf_url, runware_api_key):
     }
     
     try:
+        # Runware accepts a dead link ("model re-processing") and the LoRA just never
+        # becomes usable, so catch renamed/deleted files here with a clear message.
+        if hf_url.startswith(("http://", "https://")):
+            probe = httpx.head(hf_url, follow_redirects=True, timeout=15).status_code
+            if probe in (404, 410):
+                raise Exception(f"LoRA file not found at its URL (HTTP {probe}); was it renamed or deleted?")
+
         logger.info(f"🌐 [Runware] Uploading {model_name} with AIR: {air_id}")
-        
-        resp = requests.post(
+
+        # httpx, not requests: requests isn't a dependency, and the ImportError used to
+        # be swallowed by the caller, so no new LoRA ever reached Runware.
+        resp = httpx.post(
             "https://api.runware.ai/v1",
             headers=headers,
             json=payload,
             timeout=60
         )
-        
+
         logger.info(f"🌐 [Runware] Response status: {resp.status_code}")
-        
+
         if resp.status_code != 200:
             logger.error(f"🌐 [Runware] Upload error: {resp.text}")
             raise Exception(f"Upload failed with status {resp.status_code}")
-        
+
         data = resp.json()
-        
-        if data['data'] and len(data['data']) > 0:
+        if data.get("errors"):
+            raise Exception(f"Runware error: {data['errors'][0].get('message')}")
+
+        if data.get('data'):
             if "error" in data['data'][0]:
                 raise Exception(f"Runware error: {data['data'][0]['error']}")
-            
+
             status = data['data'][0].get('status', 'unknown')
             logger.info(f"🌐 [Runware] Upload success - AIR: {air_id}, Status: {status}")
 
         return air_id
-        
-    except requests.exceptions.Timeout:
+
+    except httpx.TimeoutException:
+        # The upload keeps going on Runware's side; resolve_runware_loras re-checks
+        # that the model really exists before trusting this mapping.
         logger.warning(f"🌐 [Runware] Upload timeout - returning AIR: {air_id}")
         return air_id
         
@@ -104,11 +115,54 @@ def upload_lora_to_runware(hf_url, runware_api_key):
         raise
 
 
+_RUNWARE_MODELS_CACHE = {"at": 0.0, "airs": None}
+RUNWARE_MODELS_TTL = 600            # seconds between private-model listings
+RUNWARE_UPLOAD_GRACE = 15 * 60      # a fresh upload may not be listed yet
+
+
+def runware_private_loras(runware_api_key):
+    """AIR ids of the account's private models (cached), or None if Runware can't be asked."""
+    if _RUNWARE_MODELS_CACHE["airs"] is not None and time.time() - _RUNWARE_MODELS_CACHE["at"] < RUNWARE_MODELS_TTL:
+        return _RUNWARE_MODELS_CACHE["airs"]
+    airs, offset = set(), 0
+    try:
+        while True:
+            resp = httpx.post(
+                "https://api.runware.ai/v1",
+                headers={"Authorization": f"Bearer {runware_api_key}"},
+                json=[{"taskType": "modelSearch", "taskUUID": str(uuid.uuid4()), "visibility": "private", "limit": 100, "offset": offset}],
+                timeout=30,
+            )
+            result = ((resp.json().get("data") or [{}])[0]) if resp.status_code == 200 else {}
+            batch = result.get("results") or []
+            airs.update(m.get("air") for m in batch if m.get("air"))
+            offset += len(batch)
+            if not batch or offset >= (result.get("totalResults") or 0):
+                break
+    except Exception as e:
+        logger.warning(f"🌐 [Runware] Could not list private models: {e}")
+        return None
+    _RUNWARE_MODELS_CACHE.update(at=time.time(), airs=airs)
+    return airs
+
+
+def _mapping_is_stale(entry, visible):
+    """A mapped LoRA Runware doesn't list, uploaded long enough ago to have finished."""
+    if visible is None or entry["runware_id"] in visible:
+        return False
+    try:
+        age = (datetime.utcnow() - datetime.fromisoformat(entry.get("uploaded_at", ""))).total_seconds()
+    except ValueError:
+        age = RUNWARE_UPLOAD_GRACE
+    return age >= RUNWARE_UPLOAD_GRACE
+
+
 def resolve_runware_loras(loras, runware_api_key):
     """Resolve a list of LoRA descriptors into Runware-usable IDs."""
     mapping = load_runware_lora_mapping()
     updated = False
     resolved = []
+    visible = None  # fetched on first use: only mapped URLs need checking
     
     for l in loras:
         src = l.get("lora") or l.get("url") or l.get("id")
@@ -132,6 +186,14 @@ def resolve_runware_loras(loras, runware_api_key):
         
         # 3) HTTP(S) URLs
         if src_str.startswith("http://") or src_str.startswith("https://"):
+            if src_str in mapping and visible is None:
+                visible = runware_private_loras(runware_api_key)
+            if src_str in mapping and _mapping_is_stale(mapping[src_str], visible):
+                # e.g. an upload that timed out and then failed: Runware rejects the id
+                # ("Invalid value for 'lora.model'"), so upload again (same AIR).
+                logger.warning(f"🌐 [Runware] {mapping[src_str]['runware_id']} is missing on Runware, re-uploading")
+                del mapping[src_str]
+                updated = True
             if src_str in mapping:
                 runware_id = mapping[src_str]["runware_id"]
                 logger.info(f"🌐 [Runware] Found mapping for {src_str} -> {runware_id}")
@@ -1371,7 +1433,8 @@ class RunwareClient(ProviderClient):
             logger.info(f"🌐 [Runware] LoRA: {lora.get('id')} - URL: {lora.get('url')} - Weight: {lora.get('weight')}")
         
         # Upload or resolve LoRAs to Runware IDs
-        resolved = resolve_runware_loras(runware_loras_input, self.api_key)
+        # In a thread: uploads and the model check are blocking HTTP calls (up to 60 s).
+        resolved = await asyncio.to_thread(resolve_runware_loras, runware_loras_input, self.api_key)
         loras_payload = []
         for item in resolved:
             loras_payload.append({"model": item["lora"], "weight": item["weight"]})

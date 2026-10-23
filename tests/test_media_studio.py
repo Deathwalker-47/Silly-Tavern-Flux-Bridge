@@ -483,6 +483,76 @@ class ReplicateFluxTests(unittest.TestCase):
             self.assertNotIn(deprecated, bridge.Config.IMAGE_PROVIDER_ORDER)
 
 
+class RunwareLoraMappingTests(unittest.TestCase):
+    """Two of 26 mapped LoRAs pointed at models Runware no longer had (uploads that timed out)."""
+    URL = "https://huggingface.co/u/r/resolve/main/a.safetensors"
+
+    def resolve(self, entry, visible, upload_id="deathwalker:new@1"):
+        saved, uploads = {}, []
+
+        def upload(url, _key):
+            uploads.append(url)
+            return upload_id
+        with unittest.mock.patch.object(bridge, "load_runware_lora_mapping", return_value={self.URL: dict(entry)}), \
+             unittest.mock.patch.object(bridge, "save_runware_lora_mapping", side_effect=saved.update), \
+             unittest.mock.patch.object(bridge, "runware_private_loras", return_value=visible), \
+             unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=upload):
+            resolved = bridge.resolve_runware_loras([{"lora": self.URL, "weight": 0.8}], "key")
+        return resolved, uploads, saved
+
+    def test_missing_model_is_uploaded_again(self):
+        resolved, uploads, saved = self.resolve({"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}, set())
+        self.assertEqual(resolved, [{"lora": "deathwalker:new@1", "weight": 0.8}])
+        self.assertEqual(uploads, [self.URL])
+        self.assertEqual(saved[self.URL]["runware_id"], "deathwalker:new@1")
+
+    def test_listed_fresh_or_unknown_mappings_are_trusted(self):
+        old = {"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}
+        fresh = {"runware_id": "deathwalker:old@1", "uploaded_at": bridge.datetime.utcnow().isoformat()}
+        for entry, visible in ((old, {"deathwalker:old@1"}), (fresh, set()), (old, None)):
+            resolved, uploads, _ = self.resolve(entry, visible)
+            self.assertEqual(resolved, [{"lora": "deathwalker:old@1", "weight": 0.8}])
+            self.assertEqual(uploads, [])
+
+    def test_private_model_listing_pages_and_caches(self):
+        pages = [{"data": [{"results": [{"air": "a@1"}, {"air": "b@1"}], "totalResults": 3}]},
+                 {"data": [{"results": [{"air": "c@1"}], "totalResults": 3}]}]
+        calls = []
+
+        def post(*_a, **kw):
+            calls.append(kw["json"][0]["offset"])
+            return types.SimpleNamespace(status_code=200, json=lambda page=pages[len(calls) - 1]: page)
+        fake = types.SimpleNamespace(post=post, TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake), \
+             unittest.mock.patch.dict(bridge._RUNWARE_MODELS_CACHE, {"at": 0.0, "airs": None}):
+            self.assertEqual(bridge.runware_private_loras("key"), {"a@1", "b@1", "c@1"})
+            self.assertEqual(bridge.runware_private_loras("key"), {"a@1", "b@1", "c@1"})
+        self.assertEqual(calls, [0, 2])  # second call served from the cache
+
+    def test_upload_uses_httpx_and_surfaces_errors(self):
+        ok = lambda *a, **kw: types.SimpleNamespace(status_code=200)  # noqa: E731  (HEAD on the source file)
+        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"errors": [{"message": "bad file"}]})
+        fake = types.SimpleNamespace(head=ok, post=lambda *a, **kw: reply, TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake):
+            with self.assertRaisesRegex(Exception, "bad file"):
+                bridge.upload_lora_to_runware(self.URL, "key")
+
+        def slow(*_a, **_kw):
+            raise TimeoutError()
+        with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(head=ok, post=slow, TimeoutException=TimeoutError)):
+            self.assertTrue(bridge.upload_lora_to_runware(self.URL, "key").startswith("deathwalker:"))
+
+    def test_upload_refuses_a_deleted_source_file(self):
+        # Runware answers "model re-processing" for a dead link and the LoRA never works.
+        posted = []
+        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=404),
+                                     post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake):
+            with self.assertRaisesRegex(Exception, "HTTP 404"):
+                bridge.upload_lora_to_runware(self.URL, "key")
+        self.assertEqual(posted, [])
+
+
 class AvatarModeTests(unittest.TestCase):
     def setUp(self):
         self.calls = []
