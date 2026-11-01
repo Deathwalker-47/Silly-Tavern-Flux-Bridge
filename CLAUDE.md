@@ -24,6 +24,7 @@ python -m pytest tests/test_provider_response_parsing.py -v
 
 - `flux_lora_bridge.py` — Main application (all Python logic: Config, providers, LoRA matching, API routes)
 - `master_lora_dict.json` — LoRA definitions and keyword mappings
+- `lora_dict.py` — dictionary format (one file per architecture under `models`) and its migration
 - `requirements.txt` — Python dependencies (FastAPI, httpx, Pillow, etc.)
 - `env.example` — Environment variable template (copy to `.env`)
 - `tests/` — Unit tests (Python unittest via pytest)
@@ -43,7 +44,7 @@ Deprecated, off by default: **Wavespeed** (4), **FAL** (3), **Together AI** (2).
 - `VIDEO_CATALOG`: provider → family → variants (first = default). A model a provider lacks is just absent
 - Video providers: `RunwareVideo`, `NanoGPTVideo`, `SogniVideo` (official SDK), `ReplicateVideo`, `MockVideo`
 - `VideoJobs` + in-memory `VideoStore`: async jobs, finished clips served at `/videos/{id}`
-- `HelperLLM`: NanoGPT chat (Together fallback) for the media director, prompt summaries and TavernVoice voice tags
+- `HelperLLM`: NanoGPT chat for the media director, prompt summaries and TavernVoice voice tags
 - Safety checkers are disabled wherever a provider offers the switch
 
 ### Key Classes (all in `flux_lora_bridge.py`)

@@ -129,7 +129,7 @@ function narrativeFor(messageId) {
     const { char } = characterOf(msg);
     const { names } = visibleCharacters();
     const recent = c.chat.slice(Math.max(0, messageId - 3), messageId)
-        .filter(m => !m.is_system).map(m => m.mes).join(' ').slice(-500);
+        .filter(m => !m.is_system).map(m => m.mes).join(' ');
     return [sdPrompt(char), names.length ? `Characters present: ${names.join(', ')}` : '', msg?.mes || '',
         recent ? `Recent context: ${recent}` : ''].filter(Boolean).join('\n\n');
 }
@@ -138,7 +138,7 @@ function chatTail(uptoId, count = 10) {
     const c = ctx();
     return c.chat.slice(Math.max(0, uptoId + 1 - count), uptoId + 1)
         .filter(m => !m.is_system && m.extra?.type !== 'narrator')
-        .map(m => ({ name: m.name, is_user: !!m.is_user, text: String(m.mes || '').slice(0, 1500) }));
+        .map(m => ({ name: m.name, is_user: !!m.is_user, text: String(m.mes || '') }));
 }
 
 async function avatarsFor(cfg) {
@@ -235,7 +235,7 @@ async function generateImage(messageId, { prompt = '', caption = '', origin = 'm
     const status = statusLine(messageId, '<i class="fa-solid fa-spinner fa-spin"></i> Generating image…');
     try {
         const { body, char } = await imageRequest(messageId, prompt);
-        const res = await bridge('/media/image', { method: 'POST', body });
+        const res = await bridge('/media/image', { method: 'POST', body, timeout: 0 });
         const b64 = res.images?.[0];
         if (!b64) throw new Error('The bridge returned no image');
         const url = await saveFile(b64, imageFormat(b64), char?.name || 'MediaStudio', `img_${Date.now()}`);
@@ -295,7 +295,6 @@ async function generateVideo(messageId, { motion = '', imagePrompt = '', caption
             state = await bridge(`/video/jobs/${job.job_id}`, { timeout: 20000 });
             const secs = Math.round((Date.now() - started) / 1000);
             status.set(`<i class="fa-solid fa-film fa-beat-fade"></i> ${state.message || state.status} · ${secs}s`);
-            if (Date.now() - started > 25 * 60 * 1000) throw new Error('Video took longer than 25 minutes');
         }
         if (state.status === 'failed') throw new Error(state.error || 'Video generation failed');
 
@@ -562,6 +561,7 @@ const galleryDeps = {
             method: 'POST',
             body: { prompt, character_name: ch.name, character_prompts: { [ch.name]: sdPrompt(ch) }, visible_characters: [ch.name],
                 mode: 'lora', avatars: [], width: 832, height: 1216, steps: Number(s.steps), cfg_scale: Number(s.cfg) },
+            timeout: 0,
         });
         const b64 = res.images?.[0];
         if (!b64) throw new Error('The bridge returned no image');

@@ -9,6 +9,7 @@ spending credits.
 """
 import asyncio
 import base64
+import hashlib
 from io import BytesIO
 from pathlib import Path
 import sys
@@ -483,40 +484,106 @@ class ReplicateFluxTests(unittest.TestCase):
             self.assertNotIn(deprecated, bridge.Config.IMAGE_PROVIDER_ORDER)
 
 
+class HelperModelTests(unittest.TestCase):
+    """GLM reasons before answering, so a small max_tokens would come back empty."""
+
+    def send(self, model, max_tokens=100):
+        sent = []
+
+        class FakeClient:
+            def __init__(self, timeout=None):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def post(self, _url, json=None, headers=None):
+                sent.append(json)
+                return types.SimpleNamespace(status_code=200, json=lambda: {"choices": [{"message": {"content": "ok"}}]})
+        with unittest.mock.patch.object(ms, "httpx", types.SimpleNamespace(AsyncClient=FakeClient)), \
+             unittest.mock.patch.object(ms.MediaConfig, "HELPER_API_KEY", "key"):
+            asyncio.run(ms.HelperLLM().chat([{"role": "user", "content": "hi"}], model=model, max_tokens=max_tokens))
+        return sent[0]
+
+    def test_glm_gets_low_reasoning_and_room_to_answer(self):
+        payload = self.send("z-ai/glm-5.3-flash-uncensored")
+        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertEqual(payload["max_tokens"], ms.REASONING_MIN_TOKENS)
+
+    def test_a_larger_budget_is_kept(self):
+        self.assertEqual(self.send("z-ai/glm-5.3-flash-uncensored", max_tokens=3000)["max_tokens"], 3000)
+
+    def test_other_models_are_left_alone(self):
+        payload = self.send("some/other-model")
+        self.assertNotIn("reasoning_effort", payload)
+        self.assertEqual(payload["max_tokens"], 100)
+
+    def test_default_model_is_glm_uncensored(self):
+        self.assertTrue(ms.MediaConfig.HELPER_MODEL.startswith("z-ai/glm"))
+
+    def test_no_together_fallback(self):
+        with unittest.mock.patch.object(ms.MediaConfig, "HELPER_API_KEY", ""):
+            self.assertEqual(ms.HelperLLM().backend()[3], "none")
+
+    def test_decide_sends_the_whole_message(self):
+        long_text = "word " * 2000
+        seen = []
+
+        async def fake_chat(messages, **_kw):
+            seen.append(messages[1]["content"])
+            return '{"action": "none"}'
+        helper = ms.HelperLLM()
+        helper.chat = fake_chat
+        asyncio.run(helper.decide(messages=[{"name": "Maya", "text": long_text}], char="Maya", user="Sam"))
+        self.assertIn(long_text.strip(), seen[0])
+
+    def test_summarizer_keeps_the_prompt_on_an_empty_reply(self):
+        async def empty(*_a, **_kw):
+            return ""
+        with unittest.mock.patch.object(ms.helper, "chat", empty), \
+             unittest.mock.patch.object(ms.MediaConfig, "HELPER_API_KEY", "key"):
+            result = asyncio.run(bridge.DeepSeekSummarizer().summarize_prompt("a long scene"))
+        self.assertEqual(result, "a long scene")
+
+
 class RunwareLoraMappingTests(unittest.TestCase):
     """Two of 26 mapped LoRAs pointed at models Runware no longer had (uploads that timed out)."""
     URL = "https://huggingface.co/u/r/resolve/main/a.safetensors"
 
-    def resolve(self, entry, visible, upload_id="deathwalker:new@1"):
+    def resolve(self, entry, visible, upload_id="deathwalker:new@1", arch="flux"):
         saved, uploads = {}, []
 
-        def upload(url, _key):
+        def upload(url, _key, _arch):
             uploads.append(url)
             return upload_id
         with unittest.mock.patch.object(bridge, "load_runware_lora_mapping", return_value={self.URL: dict(entry)}), \
              unittest.mock.patch.object(bridge, "save_runware_lora_mapping", side_effect=saved.update), \
              unittest.mock.patch.object(bridge, "runware_private_loras", return_value=visible), \
              unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=upload):
-            resolved = bridge.resolve_runware_loras([{"lora": self.URL, "weight": 0.8}], "key")
+            resolved = bridge.resolve_runware_loras([{"lora": self.URL, "weight": 0.8}], "key", arch)
         return resolved, uploads, saved
 
     def test_missing_model_is_uploaded_again(self):
-        resolved, uploads, saved = self.resolve({"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}, set())
+        resolved, uploads, saved = self.resolve({"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}, {})
         self.assertEqual(resolved, [{"lora": "deathwalker:new@1", "weight": 0.8}])
         self.assertEqual(uploads, [self.URL])
         self.assertEqual(saved[self.URL]["runware_id"], "deathwalker:new@1")
+        self.assertEqual(saved[self.URL]["architecture"], "flux1d")
 
     def test_listed_fresh_or_unknown_mappings_are_trusted(self):
         old = {"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}
         fresh = {"runware_id": "deathwalker:old@1", "uploaded_at": bridge.datetime.utcnow().isoformat()}
-        for entry, visible in ((old, {"deathwalker:old@1"}), (fresh, set()), (old, None)):
+        for entry, visible in ((old, {"deathwalker:old@1": "flux1d"}), (fresh, {}), (old, None)):
             resolved, uploads, _ = self.resolve(entry, visible)
             self.assertEqual(resolved, [{"lora": "deathwalker:old@1", "weight": 0.8}])
             self.assertEqual(uploads, [])
 
     def test_private_model_listing_pages_and_caches(self):
-        pages = [{"data": [{"results": [{"air": "a@1"}, {"air": "b@1"}], "totalResults": 3}]},
-                 {"data": [{"results": [{"air": "c@1"}], "totalResults": 3}]}]
+        pages = [{"data": [{"results": [{"air": "a@1", "architecture": "flux1d"}, {"air": "b@1", "architecture": "flux1d"}], "totalResults": 3}]},
+                 {"data": [{"results": [{"air": "c@1", "architecture": "z_image"}], "totalResults": 3}]}]
         calls = []
 
         def post(*_a, **kw):
@@ -525,8 +592,9 @@ class RunwareLoraMappingTests(unittest.TestCase):
         fake = types.SimpleNamespace(post=post, TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake), \
              unittest.mock.patch.dict(bridge._RUNWARE_MODELS_CACHE, {"at": 0.0, "airs": None}):
-            self.assertEqual(bridge.runware_private_loras("key"), {"a@1", "b@1", "c@1"})
-            self.assertEqual(bridge.runware_private_loras("key"), {"a@1", "b@1", "c@1"})
+            expected = {"a@1": "flux1d", "b@1": "flux1d", "c@1": "z_image"}
+            self.assertEqual(bridge.runware_private_loras("key"), expected)
+            self.assertEqual(bridge.runware_private_loras("key"), expected)
         self.assertEqual(calls, [0, 2])  # second call served from the cache
 
     def test_upload_uses_httpx_and_surfaces_errors(self):
@@ -535,12 +603,12 @@ class RunwareLoraMappingTests(unittest.TestCase):
         fake = types.SimpleNamespace(head=ok, post=lambda *a, **kw: reply, TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake):
             with self.assertRaisesRegex(Exception, "bad file"):
-                bridge.upload_lora_to_runware(self.URL, "key")
+                bridge.upload_lora_to_runware(self.URL, "key", "flux")
 
         def slow(*_a, **_kw):
             raise TimeoutError()
         with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(head=ok, post=slow, TimeoutException=TimeoutError)):
-            self.assertTrue(bridge.upload_lora_to_runware(self.URL, "key").startswith("deathwalker:"))
+            self.assertTrue(bridge.upload_lora_to_runware(self.URL, "key", "flux").startswith("deathwalker:"))
 
     def test_upload_refuses_a_deleted_source_file(self):
         # Runware answers "model re-processing" for a dead link and the LoRA never works.
@@ -549,8 +617,54 @@ class RunwareLoraMappingTests(unittest.TestCase):
                                      post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake):
             with self.assertRaisesRegex(Exception, "HTTP 404"):
-                bridge.upload_lora_to_runware(self.URL, "key")
+                bridge.upload_lora_to_runware(self.URL, "key", "flux")
         self.assertEqual(posted, [])
+
+    def test_upload_refuses_a_private_source_file(self):
+        posted = []
+        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=403),
+                                     post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake):
+            with self.assertRaisesRegex(Exception, "isn't public"):
+                bridge.upload_lora_to_runware(self.URL, "key", "flux")
+        self.assertEqual(posted, [])
+
+    def test_flux_air_is_the_plain_url_hash_so_uploads_keep_their_id(self):
+        expected = hashlib.sha256(self.URL.lower().encode()).hexdigest()[:12]
+        self.assertEqual(bridge.generate_air_id_from_url(self.URL)[0], f"deathwalker:{expected}@1")
+        self.assertNotEqual(bridge.generate_air_id_from_url(self.URL, "zimage")[0], f"deathwalker:{expected}@1")
+
+    def test_zimage_upload_sends_its_architecture(self):
+        sent = []
+        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"data": [{"status": "ready"}]})
+
+        def post(*_a, **kw):
+            sent.append(kw["json"][0])
+            return reply
+        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=200), post=post,
+                                     TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake):
+            air = bridge.upload_lora_to_runware(self.URL, "key", "zimage")
+        self.assertEqual(sent[0]["architecture"], "z_image")
+        self.assertEqual(sent[0]["air"], air)
+
+    def test_old_mapping_entries_count_as_flux(self):
+        entry = {"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}
+        resolved, uploads, _ = self.resolve(entry, {"deathwalker:old@1": "flux1d"})
+        self.assertEqual(resolved, [{"lora": "deathwalker:old@1", "weight": 0.8}])
+        self.assertEqual(uploads, [])
+
+    def test_file_moved_to_zimage_uploads_under_that_architecture(self):
+        entry = {"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}
+        resolved, uploads, saved = self.resolve(entry, {"deathwalker:old@1": "flux1d"}, arch="zimage")
+        self.assertEqual(resolved, [{"lora": "deathwalker:new@1", "weight": 0.8}])
+        self.assertEqual(uploads, [self.URL])
+        self.assertEqual(saved[self.URL]["architecture"], "z_image")
+
+    def test_runware_listing_another_architecture_counts_as_stale(self):
+        entry = {"runware_id": "deathwalker:old@1", "architecture": "z_image", "uploaded_at": "2026-01-03T00:02:24"}
+        _, uploads, _ = self.resolve(entry, {"deathwalker:old@1": "flux1d"}, arch="zimage")
+        self.assertEqual(uploads, [self.URL])
 
 
 class AvatarModeTests(unittest.TestCase):
