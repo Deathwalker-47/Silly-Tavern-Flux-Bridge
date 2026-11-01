@@ -1167,24 +1167,6 @@
       "negative_prompt": "",
       "notes": "No trigger word",
       "permanent": false
-    },
-    "anna": {
-      "name": "Anna",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Ana(Ana%20De%20Arma).safetensors",
-      "weight": 1.0,
-      "rank": 128,
-      "category": "character",
-      "trigger_words": [
-        "Ana De Armas"
-      ],
-      "keywords": [
-        "anna"
-      ],
-      "prepend_prompt": "Ana De Armas",
-      "append_prompt": "",
-      "negative_prompt": "",
-      "notes": "",
-      "permanent": false
     }
   }
 }
