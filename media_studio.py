@@ -78,13 +78,9 @@ class MediaConfig:
     # Helper LLM. Any OpenAI-compatible /chat/completions endpoint works; NanoGPT is the default.
     HELPER_API_URL = os.getenv("HELPER_API_URL", "https://nano-gpt.com/api/v1/chat/completions")
     HELPER_API_KEY = os.getenv("HELPER_API_KEY", "") or NANOGPT_API_KEY
-    HELPER_MODEL = os.getenv("HELPER_MODEL", "deepseek/deepseek-v4.1-flash")
+    HELPER_MODEL = os.getenv("HELPER_MODEL", "z-ai/glm-5.3-flash-uncensored")
     # Prompt summarization for txt2img; empty = HELPER_MODEL.
     SUMMARIZER_MODEL = os.getenv("SUMMARIZER_MODEL", "")
-    # Legacy fallback when no helper key is set (Together is otherwise deprecated).
-    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
-    TOGETHER_URL = "https://api.together.xyz/v1/chat/completions"
-    TOGETHER_MODEL = "deepseek-ai/DeepSeek-V3"
 
 
 # ============================================================================
@@ -1044,6 +1040,11 @@ Rules:
 Output only the tagged line, nothing else."""
 
 
+# GLM always reasons before it answers, and that reasoning spends max_tokens first.
+REASONING_MODELS = ("z-ai/glm",)
+REASONING_MIN_TOKENS = 800
+
+
 class HelperLLM:
     """OpenAI-compatible chat client used for decisions, voice tags and summaries."""
 
@@ -1051,11 +1052,9 @@ class HelperLLM:
         self._models_cache: Tuple[float, List[Dict]] = (0.0, [])
 
     def backend(self, model: Optional[str] = None) -> Tuple[str, str, str, str]:
-        """(url, key, model, label). Helper first; Together only as a legacy fallback."""
+        """(url, key, model, label)."""
         if MediaConfig.HELPER_API_KEY:
             return MediaConfig.HELPER_API_URL, MediaConfig.HELPER_API_KEY, model or MediaConfig.HELPER_MODEL, "helper"
-        if MediaConfig.TOGETHER_API_KEY:
-            return MediaConfig.TOGETHER_URL, MediaConfig.TOGETHER_API_KEY, MediaConfig.TOGETHER_MODEL, "together"
         return "", "", "", "none"
 
     @property
@@ -1068,6 +1067,8 @@ class HelperLLM:
         if not key:
             raise RuntimeError("No helper LLM configured (set NANOGPT_API_KEY or HELPER_API_KEY)")
         payload = {"model": model_id, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        if model_id.startswith(REASONING_MODELS):
+            payload.update(reasoning_effort="low", max_tokens=max(max_tokens, REASONING_MIN_TOKENS))
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json=payload, headers=headers)
@@ -1096,8 +1097,8 @@ class HelperLLM:
             name = m.get("name") or ("User" if m.get("is_user") else char)
             text = re.sub(r"\s+", " ", str(m.get("text") or "")).strip()
             if text:
-                transcript.append(f"{name}: {text[:1500]}")
-        convo = "\n".join(transcript)[-7000:]
+                transcript.append(f"{name}: {text}")
+        convo = "\n".join(transcript)
         reply = await self.chat(
             [{"role": "system", "content": system}, {"role": "user", "content": f"Chat so far:\n{convo}\n\nDecide now."}],
             model=model, max_tokens=450, temperature=0.3,

@@ -29,7 +29,7 @@ export async function bridge(path, { method = 'GET', body, timeout = 240000 } = 
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['X-Edit-Token'] = token;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
+    const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;  // 0 = wait as long as it takes
     let res;
     try {
         res = await fetch(`${bridgeBase()}${path}`, {
