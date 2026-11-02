@@ -23,7 +23,7 @@ from .config import MediaConfig
 from .director import Plan
 from .providers import PROVIDERS, provider_configured
 from .providers.base import RenderRequest, RenderResult
-from .references import Ref, pick_references, render_tokens
+from .references import PLACEHOLDER, Ref, pick_references, render_tokens
 
 logger = logging.getLogger("media.pipelines")
 
@@ -54,10 +54,12 @@ def image_route(family: str, providers: Sequence[str]) -> catalog.ModelOption:
 
 
 def people_in_plan(plan: Plan, ctx: director.DirectorInput, option: Any) -> List[Any]:
-    """The people the director chose, main character first, cut to this model's limit."""
-    chosen = ctx.people_by_key([plan.main_character] + [p.get("key") for p in plan.people])
+    """The people the director chose, main character first, then anyone its prompt points a reference at
+    but left off the list, cut to this model's limit."""
+    named = [m.group(1) for text in (plan.prompt, plan.motion_prompt, plan.last_frame_prompt) for m in PLACEHOLDER.finditer(text or "")]
+    chosen = ctx.people_by_key([plan.main_character] + [p.get("key") for p in plan.people] + named)
     if not plan.main_character:
-        chosen = ctx.people_by_key(p.get("key") for p in plan.people)
+        chosen = ctx.people_by_key([p.get("key") for p in plan.people] + named)
     return chosen[:1] if option.lora_arch else chosen[:option.people_cap]
 
 

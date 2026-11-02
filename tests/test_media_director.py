@@ -141,6 +141,13 @@ class InputTests(unittest.TestCase):
         self.assertEqual([r["key"] for r in pipelines.gallery_people([people[0], inn])], ["char:inn.png#side:b1", "char:inn.png"],
                          "the card in the shot itself is listed once")
 
+    def test_someone_the_prompt_points_a_reference_at_is_in_the_shot(self):
+        ctx = DirectorInput({"characters": [MAYA, LENA]})
+        plan = Plan.parse(plan_json(main_character="c:maya", people=[{"key": "c:maya", "role": "main"}],
+                                    prompt="{{ref:Maya:face_1}} dances while {{ref:Lena:face_1}} laughs"))
+        option = catalog.find("image", "nanogpt", "seedream-4.5")
+        self.assertEqual([p.name for p in pipelines.people_in_plan(plan, ctx, option)], ["Maya", "Lena"])
+
     def test_context_is_passed_through_whole_with_no_cuts(self):
         long_reply = "word " * 5000
         option = catalog.find("image", "nanogpt", "seedream-4.5")
