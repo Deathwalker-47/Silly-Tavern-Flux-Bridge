@@ -7,6 +7,8 @@ Run the bridge against the local mocks in dev/mock_providers.py (no real API cal
 
 Real keys in your environment are ignored for the mocked services. The "mock"
 video provider (bundled 2 s clip) is enabled alongside the mocked Runware.
+EDIT_API_TOKEN defaults to local-dev-token, since saving keys from settings needs one:
+put it in the extension's Bridge token field.
 """
 
 import os
@@ -23,14 +25,20 @@ os.environ.update({
     "HELPER_API_URL": f"{MOCK}/v1/chat/completions",
     "HELPER_API_KEY": "mock-key",
     "HELPER_MODEL": "mock/fast-helper",
+    "DIRECTOR_MODEL": "mock/fast-helper",
     "VIDEO_MOCK_PROVIDER": "true",
+    "DATA_DIR": os.getenv("DATA_DIR", str(ROOT / "data" / "local")),
     "VIDEO_POLL_SECONDS": "1",
     "REPLICATE_API_TOKEN": "",
-    "NANOGPT_API_KEY": "",
+    "NANOGPT_API_KEY": "mock-key",
+    "NANOGPT_BASE": f"{MOCK}/nanogpt",
+    "PIXELDOJO_API_KEY": "mock-key",
+    "PIXELDOJO_BASE": f"{MOCK}/pixeldojo",
     "SOGNI_API_KEY": "",
     "IMAGE_PROVIDER_ORDER": "runware",
     "PUBLIC_BASE_URL": os.getenv("PUBLIC_BASE_URL", "http://localhost:7861"),
     "KONTEXT_UPLOAD_IMAGES": "true",
+    "EDIT_API_TOKEN": os.getenv("EDIT_API_TOKEN", "local-dev-token"),
 })
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))  # run_path doesn't add the script's folder like `python file.py` does

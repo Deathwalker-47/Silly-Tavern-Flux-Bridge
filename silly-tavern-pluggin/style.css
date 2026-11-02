@@ -132,16 +132,14 @@
     opacity: 0.8;
 }
 
-.fm-slot-actions,
-.fm-item-actions {
+.fm-slot-actions {
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
     justify-content: center;
 }
 
-.fm-slot-actions .menu_button,
-.fm-item-actions .menu_button {
+.fm-slot-actions .menu_button {
     padding: 4px 6px;
     margin: 0;
     font-size: 0.85em;
@@ -153,17 +151,6 @@
 
 @keyframes fm-pulse {
     50% { opacity: 0.4; }
-}
-
-.fm-gen-label textarea {
-    width: 100%;
-}
-
-.fm-char-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: end;
 }
 
 .fm-lora-status {
@@ -178,40 +165,173 @@
     gap: 8px;
 }
 
-.fm-pick-banner {
-    color: #4c9cff;
-    font-weight: 600;
+.fm-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
-.fm-gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 10px;
-    max-height: 60vh;
+.fm-cancel {
+    cursor: pointer;
+    opacity: 0.8;
+}
+
+.fm-cancel:hover {
+    color: #e5484d;
+}
+
+#fm_video_modes {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+}
+
+.fm-test-media {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    margin-top: 6px;
+    border-radius: 8px;
+}
+
+#fm_char_button.fm-has-unrated::after {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: #f5a524;
+    vertical-align: top;
+}
+
+.fm-slot-bad .fm-slot-img {
+    border-color: #e5484d;
+}
+
+.fm-slot-error {
+    font-size: 0.75em;
+    color: #e5484d;
+    text-align: center;
+}
+
+.fm-migrated {
+    color: #f5a524;
+    font-size: 0.9em;
+}
+
+.fm-popup label input[type="number"],
+.fm-popup textarea {
+    width: 100%;
+}
+
+.fm-gens {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-height: 62vh;
     overflow-y: auto;
 }
 
-.fm-item {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    cursor: pointer;
+.fm-gen {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
 }
 
-.fm-item img,
-.fm-item video {
+.fm-gen-unrated .fm-gen-media {
+    outline: 2px solid #f5a524;
+    border-radius: 8px;
+}
+
+.fm-gen-media img,
+.fm-gen-media video {
     width: 100%;
-    aspect-ratio: 3 / 4;
-    object-fit: cover;
+    display: block;
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.2);
 }
 
-.fm-item-badge {
-    position: absolute;
-    top: 6px;
-    left: 8px;
-    color: #fff;
-    text-shadow: 0 0 4px #000;
+.fm-gen-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 3 / 4;
+    border-radius: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    opacity: 0.6;
 }
+
+.fm-gen-body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.fm-gen-meta {
+    font-size: 0.85em;
+    opacity: 0.8;
+    overflow-wrap: anywhere;
+}
+
+.fm-gen-prompt {
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 4px 0;
+}
+
+.fm-stars {
+    color: #f5a524;
+    font-size: 1.1em;
+}
+
+.fm-star {
+    cursor: pointer;
+    padding: 2px 3px;
+}
+
+.fm-trace-out {
+    max-height: 240px;
+    overflow: auto;
+    font-size: 0.75em;
+    white-space: pre;
+}
+
+.fm-report {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85em;
+}
+
+.fm-report th,
+.fm-report td {
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 500px) {
+    .fm-gen {
+        grid-template-columns: 96px 1fr;
+    }
+
+    .fm-popup-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+}
+
+.fm-key-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; margin-top: 6px; }
+.fm-key-row input { grid-column: 1 / -1; }
+.fm-key-row .menu_button { margin: 0; }
+.fm-failed-route { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+
+/* SillyTavern ships only Font Awesome's solid weight, so fa-regular draws solid too. */
+.fm-star.fa-regular { opacity: 0.25; }

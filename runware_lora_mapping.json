@@ -98,5 +98,10 @@
   "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_lip_biting(lip%20biting).safetensors": {
     "runware_id": "deathwalker:20a079f34467@1",
     "uploaded_at": "2026-10-23T22:38:56.744979"
+  },
+  "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_latest.safetensors": {
+    "runware_id": "deathwalker:1d4ce5e2656a@1",
+    "architecture": "flux1d",
+    "uploaded_at": "2026-11-01T20:01:21.497182"
   }
 }

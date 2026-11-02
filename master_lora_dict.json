@@ -2,320 +2,418 @@
   "config": {
     "default_steps": 40,
     "default_guidance_scale": 3.5,
-    "permanent_loras": [
-    ],
+    "permanent_loras": [],
     "default_negative_prompt": "blurry, low quality, distorted, deformed, ugly, bad anatomy, bad proportions, watermark, signature, text"
   },
   "loras": {
     "shakkar_nimya_latest": {
       "name": "Shakkar Latest Nimya (Main Character)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_latest.safetensors",
-      "weight": 0.8,
       "rank": 1,
       "category": "character",
-      "trigger_words": [
-        "nimya33"
-      ],
       "keywords": [
         "nimya"
       ],
-      "prepend_prompt": "nimya33",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Alternative character checkpoint",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_latest.safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "nimya33"
+          ],
+          "prepend_prompt": "nimya33",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "shakkar_24_nimya": {
       "name": "Shakkar 24 Nimya (Main Character)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_24_image.safetensors",
-      "weight": 1,
       "rank": 1,
       "category": "character",
-      "trigger_words": [
-        "nimya33"
-      ],
       "keywords": [
         "niya_alt1"
       ],
-      "prepend_prompt": "nimya33",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Alternative character checkpoint",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_24_image.safetensors",
+          "weight": 1,
+          "trigger_words": [
+            "nimya33"
+          ],
+          "prepend_prompt": "nimya33",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "shakkar_42_nimya": {
       "name": "Shakkar 42",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_42_image.safetensors",
-      "weight": 1,
       "rank": 2,
       "category": "character",
-      "trigger_words": [
-        "nimya33"
-      ],
       "keywords": [
         "niya_alt2"
       ],
-      "prepend_prompt": "nimya33 a beautiful south indian woman with long black hair, full lips, and Kajal adorned eyes",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Primary character LoRA",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_shakkar_42_image.safetensors",
+          "weight": 1,
+          "trigger_words": [
+            "nimya33"
+          ],
+          "prepend_prompt": "nimya33 a beautiful south indian woman with long black hair, full lips, and Kajal adorned eyes",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "realism": {
       "name": "Realism LoRA",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Realism_LoRA%20.safetensors",
-      "weight": 0.3,
       "rank": 3,
       "category": "general",
-      "trigger_words": [],
-      "keywords": ["realism"],
-      "prepend_prompt": "",
-      "append_prompt": "photorealistic, detailed skin texture, professional photography",
-      "negative_prompt": "cartoon, anime, painting, illustration",
+      "keywords": [
+        "realism"
+      ],
       "notes": "Enhances photorealism - ALWAYS ACTIVE",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Realism_LoRA%20.safetensors",
+          "weight": 0.3,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "photorealistic, detailed skin texture, professional photography",
+          "negative_prompt": "cartoon, anime, painting, illustration"
+        },
+        "zimage": null
+      }
     },
     "imagination": {
       "name": "Imagination (Anatomy Fix)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/imagination_v777_flux-000001.safetensors",
-      "weight": 0.4,
       "rank": 10,
       "category": "general",
-      "trigger_words": [],
-      "keywords": ["imagination"],
-      "prepend_prompt": "",
-      "append_prompt": "anatomically correct, proper proportions",
-      "negative_prompt": "deformed hands, extra fingers, missing fingers",
+      "keywords": [
+        "imagination"
+      ],
       "notes": "Use weight 0.1-0.9 based on severity of anatomical issues",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/imagination_v777_flux-000001.safetensors",
+          "weight": 0.4,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "anatomically correct, proper proportions",
+          "negative_prompt": "deformed hands, extra fingers, missing fingers"
+        },
+        "zimage": null
+      }
     },
     "detail_enhancer": {
       "name": "Detail  Enhancer",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/detail_enhancer.safetensors",
-      "weight": 0.4,
       "rank": 10,
       "category": "general",
-      "trigger_words": [],
-      "keywords": ["detail_enhancer"],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
+      "keywords": [
+        "detail_enhancer"
+      ],
       "notes": "",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/detail_enhancer.safetensors",
+          "weight": 0.4,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "detailed_hands": {
       "name": "Hand (Anatomy Fix)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/detailed_hands.safetensors",
-      "weight": 0.4,
       "rank": 10,
       "category": "general",
-      "trigger_words": ["detailed hands"],
-      "keywords": ["detailed_hands"],
-      "prepend_prompt": "detailed hands",
-      "append_prompt": "",
-      "negative_prompt": "",
+      "keywords": [
+        "detailed_hands"
+      ],
       "notes": "",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/detailed_hands.safetensors",
+          "weight": 0.4,
+          "trigger_words": [
+            "detailed hands"
+          ],
+          "prepend_prompt": "detailed hands",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "man": {
       "name": "Man (Male Portrayal)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Man(Portrayal%20Man).safetensors",
-      "weight": 0.6,
       "rank": 5,
       "category": "general",
-      "trigger_words": [
-        "Portrayal Man"
-      ],
       "keywords": [
         "Portrayal Man"
       ],
-      "prepend_prompt": "Portrayal Man",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Inject when male character is mentioned",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Man(Portrayal%20Man).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "Portrayal Man"
+          ],
+          "prepend_prompt": "Portrayal Man",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "indian_woman_natural": {
       "name": "Indian Woman Natural Beauty",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_woman_natural_beauty(indianwoman).safetensors",
-      "weight": 0.3,
       "rank": 4,
       "category": "general",
-      "trigger_words": [
-        "indianwoman"
-      ],
       "keywords": [
         "tamil woman",
         "south asian",
         "dravidian"
       ],
-      "prepend_prompt": "indianwoman",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Enhances Indian female features",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_woman_natural_beauty(indianwoman).safetensors",
+          "weight": 0.3,
+          "trigger_words": [
+            "indianwoman"
+          ],
+          "prepend_prompt": "indianwoman",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "indian_style_face": {
       "name": "Indian Style Face & Skin",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_Style_Face_Skin_Lora_Nsfw.safetensors",
-      "weight": 0.3,
       "rank": 6,
       "category": "general",
-      "trigger_words": [],
-      "keywords": ["indian_face"],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
+      "keywords": [
+        "indian_face"
+      ],
       "notes": "Weight range 0.1-1.0 depending on desired intensity",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_Style_Face_Skin_Lora_Nsfw.safetensors",
+          "weight": 0.3,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "indian_ethnicity": {
       "name": "Indian Female Ethnicity",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_Female_Ethinicity(Indian).safetensors",
-      "weight": 0.3,
       "rank": 7,
       "category": "general",
-      "trigger_words": [
-        "Indian_ethnicity"
-      ],
       "keywords": [
         "indian ethnicity",
         "ethnic",
         "traditional indian"
       ],
-      "prepend_prompt": "indian",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_Female_Ethinicity(Indian).safetensors",
+          "weight": 0.3,
+          "trigger_words": [
+            "Indian_ethnicity"
+          ],
+          "prepend_prompt": "indian",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master_mystic": {
       "name": "NSFW Master Mystic",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_Master_MysticXXX.safetensors",
-      "weight": 0.6,
       "rank": 20,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "nsfw0"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "General NSFW enhancement",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_Master_MysticXXX.safetensors",
+          "weight": 0.6,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_busts": {
       "name": "NSFW Perfect Busts",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/PerfectBusts.safetensors",
-      "weight": 0.6,
       "rank": 20,
       "category": "nsfw",
-      "trigger_words": ["woman"],
       "keywords": [
         "nsfw_busts"
       ],
-      "prepend_prompt": "woman",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "General NSFW Bust enhancement",
-      "permanent": true
+      "permanent": true,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/PerfectBusts.safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "woman"
+          ],
+          "prepend_prompt": "woman",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master": {
       "name": "NSFW Master",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master.safetensors",
-      "weight": 0.6,
       "rank": 20,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "nsfw1"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "General NSFW enhancement",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master.safetensors",
+          "weight": 0.6,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master_3": {
       "name": "NSFW Master 3 (Nude)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master-3(nude).safetensors",
-      "weight": 0.4,
       "rank": 21,
       "category": "nsfw",
-      "trigger_words": [
-        "nude"
-      ],
       "keywords": [
         "nsfw3"
       ],
-      "prepend_prompt": "nude",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Strong nude emphasis",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master-3(nude).safetensors",
+          "weight": 0.4,
+          "trigger_words": [
+            "nude"
+          ],
+          "prepend_prompt": "nude",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master_2": {
       "name": "NSFW Master 2 (AiArtV)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master-2(AiArtV).safetensors",
-      "weight": 0.4,
       "rank": 22,
       "category": "nsfw",
-      "trigger_words": [
-        "AiArtV"
-      ],
       "keywords": [
         "nsfw2"
       ],
-      "prepend_prompt": "AiArtV",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Artistic NSFW style",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master-2(AiArtV).safetensors",
+          "weight": 0.4,
+          "trigger_words": [
+            "AiArtV"
+          ],
+          "prepend_prompt": "AiArtV",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master_4": {
       "name": "NSFW Master 4 Titan Forge",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Titanforge_v1.safetensors",
-      "weight": 0.6,
       "rank": 22,
       "category": "nsfw",
-      "trigger_words": [
-        ""
-      ],
       "keywords": [
         "nsfw4"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Titan Forge NSFW style",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Titanforge_v1.safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            ""
+          ],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "nsfw_master_photorealism": {
       "name": "NSFW Master Photorealism",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master_photorealistic.safetensors",
-      "weight": 0.3,
       "rank": 23,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "nsfw_photo"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "photorealistic nude, realistic skin texture",
-      "negative_prompt": "",
       "notes": "Weight range 0.4-0.9",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/NSFW_master_photorealistic.safetensors",
+          "weight": 0.3,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "photorealistic nude, realistic skin texture",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "sex_from_behind": {
       "name": "Sex From Behind",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/sex_from_behind_FLUX-000012.safetensors",
-      "weight": 0.55,
       "rank": 30,
       "category": "nsfw",
-      "trigger_words": [
-        "sex_from_behind"
-      ],
       "keywords": [
         "from behind",
         "doggy",
@@ -324,19 +422,26 @@
         "bent over",
         "sex from behind"
       ],
-      "prepend_prompt": "sex_from_behind",
-      "append_prompt": "sex from behind, doggy style position",
-      "negative_prompt": "",
       "notes": "Working well",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/sex_from_behind_FLUX-000012.safetensors",
+          "weight": 0.55,
+          "trigger_words": [
+            "sex_from_behind"
+          ],
+          "prepend_prompt": "sex_from_behind",
+          "append_prompt": "sex from behind, doggy style position",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "pov_blowjob": {
       "name": "POV Blowjob",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Pov_blowjob.safetensors",
-      "weight": 0.5,
       "rank": 31,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "blowjob",
         "bj",
@@ -346,72 +451,92 @@
         "cock in mouth",
         "giving head"
       ],
-      "prepend_prompt": "pov_bj, pov blowjob",
-      "append_prompt": "oral sex",
-      "negative_prompt": "",
       "notes": "Working well - POV perspective",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Pov_blowjob.safetensors",
+          "weight": 0.5,
+          "trigger_words": [],
+          "prepend_prompt": "pov_bj, pov blowjob",
+          "append_prompt": "oral sex",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "blowbang": {
       "name": "Blowbang",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/blowbang.safetensors",
-      "weight": 0.65,
       "rank": 32,
       "category": "nsfw",
-      "trigger_words": [
-        "Blowbang"
-      ],
       "keywords": [
         "blowbang",
         "multiple cocks",
         "gangbang oral"
       ],
-      "prepend_prompt": "Blowbang",
-      "append_prompt": " She is surrounded by penises, She is holding penises with her hands, A penis is touching her face, A penis is touching her hair, Viewed from above, She is kneeling",
-      "negative_prompt": "",
       "notes": "Weight range 0.8-1.0 - working well",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/blowbang.safetensors",
+          "weight": 0.65,
+          "trigger_words": [
+            "Blowbang"
+          ],
+          "prepend_prompt": "Blowbang",
+          "append_prompt": " She is surrounded by penises, She is holding penises with her hands, A penis is touching her face, A penis is touching her hair, Viewed from above, She is kneeling",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "lustly": {
       "name": "Lustly (Men-Women Set)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/flux_lustly-ai_v1.safetensors",
-      "weight": 0.2,
       "rank": 33,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Somewhat usable - experimental",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/flux_lustly-ai_v1.safetensors",
+          "weight": 0.2,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "vaginal_sex_multi": {
       "name": "Multiple Position Vaginal Sex",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/vaginalsexlorav1.safetensors",
-      "weight": 0.4,
       "rank": 34,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "vaginal sex",
         "missionary position",
         "sex positions",
-	"cowgirl position"
+        "cowgirl position"
       ],
-      "prepend_prompt": "a nude couple, a man and a woman having vaginal sex.",
-      "append_prompt": "nude couple, man with woman fucking",
-      "negative_prompt": "",
       "notes": "Not working well with nsfw_master - use alone",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/vaginalsexlorav1.safetensors",
+          "weight": 0.4,
+          "trigger_words": [],
+          "prepend_prompt": "a nude couple, a man and a woman having vaginal sex.",
+          "append_prompt": "nude couple, man with woman fucking",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "ass_expose": {
       "name": "Ass Pose / Expose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/assexpose.safetensors",
-      "weight": 0.5,
       "rank": 35,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "ass exposed",
         "butt naked",
@@ -421,19 +546,24 @@
         "showing butt",
         "exposing nude ass"
       ],
-      "prepend_prompt": "woman exposing her nude ass",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Working - can combine with nsfw_master",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/assexpose.safetensors",
+          "weight": 0.5,
+          "trigger_words": [],
+          "prepend_prompt": "woman exposing her nude ass",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "lesbian_play": {
       "name": "Lesbian Play",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/lesbiaplay-000010.safetensors",
-      "weight": 0.55,
       "rank": 36,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "lesbian",
         "two women",
@@ -441,19 +571,24 @@
         "women together",
         "lesbian sex"
       ],
-      "prepend_prompt": "l3sbi4pl4y",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Works but limited variety",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/lesbiaplay-000010.safetensors",
+          "weight": 0.55,
+          "trigger_words": [],
+          "prepend_prompt": "l3sbi4pl4y",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "pussy_show": {
       "name": "Pussy Show/Play",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/pussyplayv2.safetensors",
-      "weight": 0.55,
       "rank": 37,
       "category": "nsfw",
-      "trigger_words": [],
       "keywords": [
         "showing pussy",
         "vagina exposed",
@@ -461,42 +596,50 @@
         "showing vagina",
         "pussy exposed"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "legs spreading wide to exposing her pussy with pubic hair, showing realistic bush, anatomically correct genitalia, realistic proportions vagina, detailed labia minora majora, asymmetrical natural, natural body hair,",
-      "negative_prompt": "",
       "notes": "Weight range 0.8-0.9 - can use with nsfw_master",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/pussyplayv2.safetensors",
+          "weight": 0.55,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "legs spreading wide to exposing her pussy with pubic hair, showing realistic bush, anatomically correct genitalia, realistic proportions vagina, detailed labia minora majora, asymmetrical natural, natural body hair,",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "pov_cowgirl": {
       "name": "POV Cowgirl",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/povcowgirl.safetensors",
-      "weight": 0.5,
       "rank": 38,
       "category": "nsfw",
-      "trigger_words": [
-        "POVC0wg1rl"
-      ],
       "keywords": [
         "cowgirl",
         "riding on top",
         "pov cowgirl",
         "woman on top"
       ],
-      "prepend_prompt": "POVC0wg1rl",
-      "append_prompt": "pov cowgirl position, she is seated on a man outside the view, His penis is inserted in her vagina, kneeling on the legs of a man lying beneath her",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/povcowgirl.safetensors",
+          "weight": 0.5,
+          "trigger_words": [
+            "POVC0wg1rl"
+          ],
+          "prepend_prompt": "POVC0wg1rl",
+          "append_prompt": "pov cowgirl position, she is seated on a man outside the view, His penis is inserted in her vagina, kneeling on the legs of a man lying beneath her",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "expression_master": {
       "name": "Expression Master",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_helper(what).safetensors",
-      "weight": 0.6,
       "rank": 50,
       "category": "expression",
-      "trigger_words": [
-        "what"
-      ],
       "keywords": [
         "sad",
         "angry",
@@ -507,21 +650,26 @@
         "scared",
         "open mouth"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Weight range 0.1-0.9 - general emotions",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_helper(what).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "what"
+          ],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "expression_master_2": {
       "name": "Expression Master 2",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_helper_2(what%20facial%20expression).safetensors",
-      "weight": 0.6,
       "rank": 51,
       "category": "expression",
-      "trigger_words": [
-        "what facial expression"
-      ],
       "keywords": [
         "aroused facial expression",
         "pouting facial expression",
@@ -533,41 +681,51 @@
         "seductive facial expression",
         "loving facial expression"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "For specific emotional states",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_helper_2(what%20facial%20expression).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "what facial expression"
+          ],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "lip_biting": {
       "name": "Lip Biting",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_lip_biting(lip%20biting).safetensors",
-      "weight": 0.8,
       "rank": 52,
       "category": "expression",
-      "trigger_words": [
-        "lip biting"
-      ],
       "keywords": [
         "lip biting",
         "biting lip",
         "biting lower lip"
       ],
-      "prepend_prompt": "biting lower lip",
-      "append_prompt": "lip biting",
-      "negative_prompt": "",
       "notes": "Weight range 0.8-1.2",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_lip_biting(lip%20biting).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "lip biting"
+          ],
+          "prepend_prompt": "biting lower lip",
+          "append_prompt": "lip biting",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "shushing": {
       "name": "Shushing (Shhh Gesture)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_SHHH_Sexy_shushing(creating%20a%20shh%20gesture).safetensors",
-      "weight": 0.8,
       "rank": 53,
       "category": "expression",
-      "trigger_words": [
-        "creating a shh gesture"
-      ],
       "keywords": [
         "shh",
         "shushing",
@@ -575,82 +733,102 @@
         "quiet gesture",
         "shhh"
       ],
-      "prepend_prompt": "creating a shh gesture",
-      "append_prompt": "creating a shh gesture, finger on lips",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_SHHH_Sexy_shushing(creating%20a%20shh%20gesture).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "creating a shh gesture"
+          ],
+          "prepend_prompt": "creating a shh gesture",
+          "append_prompt": "creating a shh gesture, finger on lips",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "finger_biting": {
       "name": "Finger Biting",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_biting_finger(Biting%20finger).safetensors",
-      "weight": 0.8,
       "rank": 54,
       "category": "expression",
-      "trigger_words": [
-        "Biting finger"
-      ],
       "keywords": [
         "biting finger",
         "finger in mouth",
         "finger biting"
       ],
-      "prepend_prompt": "Biting finger",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_biting_finger(Biting%20finger).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Biting finger"
+          ],
+          "prepend_prompt": "Biting finger",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "blushing": {
       "name": "Blushing",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_blushing(Blushing).safetensors",
-      "weight": 0.8,
       "rank": 55,
       "category": "expression",
-      "trigger_words": [
-        "Blushing"
-      ],
       "keywords": [
         "blushing",
         "blush",
         "flushed",
         "red cheeks"
       ],
-      "prepend_prompt": "Blushing",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_blushing(Blushing).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Blushing"
+          ],
+          "prepend_prompt": "Blushing",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "licking_lips": {
       "name": "Licking Lips",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_licking_lips_sexy(Licking%20lips).safetensors",
-      "weight": 0.8,
       "rank": 56,
       "category": "expression",
-      "trigger_words": [
-        "Licking lips"
-      ],
       "keywords": [
         "licking lips",
         "tongue out",
         "sensual lips"
       ],
-      "prepend_prompt": "Licking lips",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_licking_lips_sexy(Licking%20lips).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Licking lips"
+          ],
+          "prepend_prompt": "Licking lips",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "orgasm": {
       "name": "Orgasm Expression",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_orgasm(orgasm%20description).safetensors",
-      "weight": 0.6,
       "rank": 57,
       "category": "expression",
-      "trigger_words": [
-        "orgasm description"
-      ],
       "keywords": [
         "orgasm face",
         "climax face",
@@ -658,21 +836,26 @@
         "blissful face",
         "ahegao"
       ],
-      "prepend_prompt": "The image is a high-resolution photograph of a young woman",
-      "append_prompt": "with expression of pleasure or ecstasy, orgasm, eyes closed, mouth slightly open, expression of relaxation or pleasure",
-      "negative_prompt": "",
       "notes": "Specific prepend/append required",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_orgasm(orgasm%20description).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "orgasm description"
+          ],
+          "prepend_prompt": "The image is a high-resolution photograph of a young woman",
+          "append_prompt": "with expression of pleasure or ecstasy, orgasm, eyes closed, mouth slightly open, expression of relaxation or pleasure",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "mischievous_smirk": {
       "name": "Mischievous Smirk",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_mischievous_smirk_sexy_playful_expression(Mischievous%20look%2C%20Eyes%20slightly%20squinted).safetensors",
-      "weight": 0.8,
       "rank": 58,
       "category": "expression",
-      "trigger_words": [
-        "Mischievous look, Eyes slightly squinted"
-      ],
       "keywords": [
         "mischievous smile",
         "mischievous smirk",
@@ -680,493 +863,633 @@
         "sly smile",
         "teasing smile"
       ],
-      "prepend_prompt": "Mischievous look",
-      "append_prompt": "Eyes slightly squinted",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_mischievous_smirk_sexy_playful_expression(Mischievous%20look%2C%20Eyes%20slightly%20squinted).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Mischievous look, Eyes slightly squinted"
+          ],
+          "prepend_prompt": "Mischievous look",
+          "append_prompt": "Eyes slightly squinted",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "eating_banana": {
       "name": "Eating Banana",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_woman_eating_banana(She%20is%20in%20the%20process%20of%20eating%20a%20peeled%20banana%2C%20suggesting%20she%20is%20in%20the%20act%20of%20eating%20it.).safetensors",
-      "weight": 0.8,
       "rank": 59,
       "category": "expression",
-      "trigger_words": [
-        "She is in the process of eating a peeled banana, suggesting she is in the act of eating it."
-      ],
       "keywords": [
         "eating banana",
         "banana eating"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "She is in the process of eating a peeled banana",
-      "negative_prompt": "",
       "notes": "Suggestive pose",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_woman_eating_banana(She%20is%20in%20the%20process%20of%20eating%20a%20peeled%20banana%2C%20suggesting%20she%20is%20in%20the%20act%20of%20eating%20it.).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "She is in the process of eating a peeled banana, suggesting she is in the act of eating it."
+          ],
+          "prepend_prompt": "",
+          "append_prompt": "She is in the process of eating a peeled banana",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "looking_over_sunglasses": {
       "name": "Looking Over Sunglasses",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_woman_looking_over_glassessunglasses.safetensors",
-      "weight": 0.7,
       "rank": 60,
       "category": "expression",
-      "trigger_words": [],
       "keywords": [
         "sunglasses",
         "looking over glasses",
         "peering over sunglasses",
         "glasses"
       ],
-      "prepend_prompt": "The woman is playfully holding the sunglasses up with her fingers, giving a casual, mischievous expression",
-      "append_prompt": "looking over sunglasses, playful expression",
-      "negative_prompt": "",
       "notes": "Weight range 0.8-1.0",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/expression_woman_looking_over_glassessunglasses.safetensors",
+          "weight": 0.7,
+          "trigger_words": [],
+          "prepend_prompt": "The woman is playfully holding the sunglasses up with her fingers, giving a casual, mischievous expression",
+          "append_prompt": "looking over sunglasses, playful expression",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "astria_nimya": {
       "name": "Astria Nimya (Alternative)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_astria_v1.safetensors",
-      "weight": 0.6,
       "rank": 3,
       "category": "character",
-      "trigger_words": [
-        "nimya33"
-      ],
       "keywords": [
         "nimya_face"
       ],
-      "prepend_prompt": "nimya33",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Alternative nimya character - rarely used",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/nimya_astria_v1.safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "nimya33"
+          ],
+          "prepend_prompt": "nimya33",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "aunty_nikita": {
       "name": "Aunty Nikita",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/indian_aunty_nikita(indian%20beautiful%20aunty).safetensors",
-      "weight": 0.6,
       "rank": 102,
       "category": "character",
-      "trigger_words": [
-        "indian beautiful aunty"
-      ],
       "keywords": [
         "aunty nikita",
         "nikita",
         "aunty niki",
         "mature aunty"
       ],
-      "prepend_prompt": "indian beautiful aunty",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/indian_aunty_nikita(indian%20beautiful%20aunty).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "indian beautiful aunty"
+          ],
+          "prepend_prompt": "indian beautiful aunty",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "kavya": {
       "name": "Kavya",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kavya(Indian%20woman).safetensors",
-      "weight": 1,
       "rank": 110,
       "category": "character",
-      "trigger_words": [
-        "Indian woman"
-      ],
       "keywords": [
         "kavya"
       ],
-      "prepend_prompt": "Indian woman",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kavya(Indian%20woman).safetensors",
+          "weight": 1,
+          "trigger_words": [
+            "Indian woman"
+          ],
+          "prepend_prompt": "Indian woman",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "mahira": {
       "name": "Mahira",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mahira(CurvyCuteIndianFlux).safetensors",
-      "weight": 1,
       "rank": 111,
       "category": "character",
-      "trigger_words": [
-        "CurvyCuteIndianFlux"
-      ],
       "keywords": [
         "mahira"
       ],
-      "prepend_prompt": "CurvyCuteIndianFlux",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mahira(CurvyCuteIndianFlux).safetensors",
+          "weight": 1,
+          "trigger_words": [
+            "CurvyCuteIndianFlux"
+          ],
+          "prepend_prompt": "CurvyCuteIndianFlux",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "kaira": {
       "name": "Kaira",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kaira(F.1CCIV.2).safetensors",
-      "weight": 1,
       "rank": 112,
       "category": "character",
-      "trigger_words": [
-        "F.1CCIV.2"
-      ],
       "keywords": [
         "kaira"
       ],
-      "prepend_prompt": "F.1CCIV.2",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kaira(F.1CCIV.2).safetensors",
+          "weight": 1,
+          "trigger_words": [
+            "F.1CCIV.2"
+          ],
+          "prepend_prompt": "F.1CCIV.2",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "priti": {
       "name": "Indian AI Priti",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_AI_Priti(priti3).safetensors",
-      "weight": 0.9,
       "rank": 113,
       "category": "character",
-      "trigger_words": [
-        "priti3"
-      ],
       "keywords": [
         "priti"
       ],
-      "prepend_prompt": "priti3",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Indian_AI_Priti(priti3).safetensors",
+          "weight": 0.9,
+          "trigger_words": [
+            "priti3"
+          ],
+          "prepend_prompt": "priti3",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "random_women": {
       "name": "Random Women (Indian Woman Flux)",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Random_Women(IndianWomanFlux).safetensors",
-      "weight": 1.3,
       "rank": 115,
       "category": "character",
-      "trigger_words": [
-        "IndianWomanFlux"
-      ],
       "keywords": [
         "random women"
       ],
-      "prepend_prompt": "IndianWomanFlux",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "Random women generator",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Random_Women(IndianWomanFlux).safetensors",
+          "weight": 1.3,
+          "trigger_words": [
+            "IndianWomanFlux"
+          ],
+          "prepend_prompt": "IndianWomanFlux",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "feet_pussy_pose": {
       "name": "Feet and Pussy Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Feet_and_Pussy_Pose(Showing%20feet%20and%20pussy).safetensors",
-      "weight": 0.8,
       "rank": 40,
       "category": "nsfw",
-      "trigger_words": [
-        "Showing feet and pussy"
-      ],
       "keywords": [
         "feet and pussy",
         "feet and vagina",
         "leg and vagina",
         "leg and pussy"
       ],
-      "prepend_prompt": "Showing feet and pussy",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Feet_and_Pussy_Pose(Showing%20feet%20and%20pussy).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Showing feet and pussy"
+          ],
+          "prepend_prompt": "Showing feet and pussy",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "legs_up_pose": {
       "name": "Legs Up Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Legs_Up(LegsUpPose).safetensors",
-      "weight": 0.8,
       "rank": 41,
       "category": "nsfw",
-      "trigger_words": [
-        "LegsUpPose"
-      ],
       "keywords": [
         "legs up",
         "feet up",
         "leg up"
       ],
-      "prepend_prompt": "LegsUpPose",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Legs_Up(LegsUpPose).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "LegsUpPose"
+          ],
+          "prepend_prompt": "LegsUpPose",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "sensual_back_arch": {
       "name": "Sensual Back Arch Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sensual_Back_Arch_Pose(sensual_back_arch_pose).safetensors",
-      "weight": 0.8,
       "rank": 42,
       "category": "nsfw",
-      "trigger_words": [
-        "sensual_back_arch_pose"
-      ],
       "keywords": [
         "back arch"
       ],
-      "prepend_prompt": "sensual_back_arch_pose",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sensual_Back_Arch_Pose(sensual_back_arch_pose).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "sensual_back_arch_pose"
+          ],
+          "prepend_prompt": "sensual_back_arch_pose",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "bum_lift": {
       "name": "Bum Lift Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/bum_lift(BUMLIFT).safetensors",
-      "weight": 0.8,
       "rank": 43,
       "category": "nsfw",
-      "trigger_words": [
-        "BUMLIFT"
-      ],
       "keywords": [
         "bum lift",
         "ass lift"
       ],
-      "prepend_prompt": "BUMLIFT",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/bum_lift(BUMLIFT).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "BUMLIFT"
+          ],
+          "prepend_prompt": "BUMLIFT",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "back_shot": {
       "name": "Back Shot Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/bvksh0t_pose(bvksh0t%20pose).safetensors",
-      "weight": 0.8,
       "rank": 44,
       "category": "nsfw",
-      "trigger_words": [
-        "bvksh0t pose"
-      ],
       "keywords": [
         "back shot",
         "doggie"
       ],
-      "prepend_prompt": "bvksh0t pose",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/bvksh0t_pose(bvksh0t%20pose).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "bvksh0t pose"
+          ],
+          "prepend_prompt": "bvksh0t pose",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "foot_to_pussy": {
       "name": "Foot to Pussy Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/foot_to_pussy(fi2p).safetensors",
-      "weight": 1.0,
       "rank": 45,
       "category": "nsfw",
-      "trigger_words": [
-        "fi2p"
-      ],
       "keywords": [
         "foot to pussy",
         "leg to pussy",
         "foot to vagina",
         "leg to vagina"
       ],
-      "prepend_prompt": "fi2p",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/foot_to_pussy(fi2p).safetensors",
+          "weight": 1.0,
+          "trigger_words": [
+            "fi2p"
+          ],
+          "prepend_prompt": "fi2p",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "canvas_pose": {
       "name": "Canvas Pose",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Canvas_Pose(Canvas_pose_babe).safetensors",
-      "weight": 0.8,
       "rank": 46,
       "category": "nsfw",
-      "trigger_words": [
-        "Canvas_pose_babe"
-      ],
       "keywords": [
         "canvas"
       ],
-      "prepend_prompt": "Canvas_pose_babe",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Canvas_Pose(Canvas_pose_babe).safetensors",
+          "weight": 0.8,
+          "trigger_words": [
+            "Canvas_pose_babe"
+          ],
+          "prepend_prompt": "Canvas_pose_babe",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "dynamic_pose": {
       "name": "Dynamic Poses",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Dynamic_Poses(dynamic%20pose).safetensors",
-      "weight": 0.7,
       "rank": 47,
       "category": "nsfw",
-      "trigger_words": [
-        "dynamic pose"
-      ],
       "keywords": [
         "pose"
       ],
-      "prepend_prompt": "dynamic pose",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Dynamic_Poses(dynamic%20pose).safetensors",
+          "weight": 0.7,
+          "trigger_words": [
+            "dynamic pose"
+          ],
+          "prepend_prompt": "dynamic pose",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "akshara": {
       "name": "Akshara",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Akshara(south-indian-girl-v2).safetensors",
-      "weight": 1.0,
       "rank": 117,
       "category": "character",
-      "trigger_words": [
-        "south-indian-girl-v2"
-      ],
       "keywords": [
         "akshara",
         "aiswarya"
       ],
-      "prepend_prompt": "south-indian-girl-v2",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Akshara(south-indian-girl-v2).safetensors",
+          "weight": 1.0,
+          "trigger_words": [
+            "south-indian-girl-v2"
+          ],
+          "prepend_prompt": "south-indian-girl-v2",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "alexandra": {
       "name": "Alexandra",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Alexandra(alexandra).safetensors",
-      "weight": 0.6,
       "rank": 118,
       "category": "character",
-      "trigger_words": [
-        "alexandra"
-      ],
       "keywords": [
         "alexandra",
         "alex"
       ],
-      "prepend_prompt": "alexandra",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Alexandra(alexandra).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "alexandra"
+          ],
+          "prepend_prompt": "alexandra",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "archana": {
       "name": "Archana",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Archana(milf).safetensors",
-      "weight": 0.6,
       "rank": 119,
       "category": "character",
-      "trigger_words": [
-        "milf"
-      ],
       "keywords": [
         "archana",
         "archi"
       ],
-      "prepend_prompt": "milf",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Archana(milf).safetensors",
+          "weight": 0.6,
+          "trigger_words": [
+            "milf"
+          ],
+          "prepend_prompt": "milf",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "darcy": {
       "name": "Dia",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/D14M0ND(d14m0nd).safetensors",
-      "weight": 1.0,
       "rank": 120,
       "category": "character",
-      "trigger_words": [
-        "d14m0nd"
-      ],
       "keywords": [
         "darcy"
       ],
-      "prepend_prompt": "d14m0nd",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/D14M0ND(d14m0nd).safetensors",
+          "weight": 1.0,
+          "trigger_words": [
+            "d14m0nd"
+          ],
+          "prepend_prompt": "d14m0nd",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "ketika": {
       "name": "Ketika",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Ketika(ketikasflux).safetensors",
-      "weight": 1.5,
       "rank": 121,
       "category": "character",
-      "trigger_words": [
-        "ketikasflux"
-      ],
       "keywords": [
         "ketika"
       ],
-      "prepend_prompt": "ketikasflux",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Ketika(ketikasflux).safetensors",
+          "weight": 1.5,
+          "trigger_words": [
+            "ketikasflux"
+          ],
+          "prepend_prompt": "ketikasflux",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "mohini": {
       "name": "Mohini",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mohini.safetensors",
-      "weight": 0.7,
       "rank": 123,
       "category": "character",
-      "trigger_words": [],
       "keywords": [
         "mohini"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "No trigger word",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Mohini.safetensors",
+          "weight": 0.7,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "sayomi": {
       "name": "Sayomi",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sayomi(BIJI_QiPao.).safetensors",
-      "weight": 0.9,
       "rank": 124,
       "category": "character",
-      "trigger_words": [
-        "BIJI_QiPao"
-      ],
       "keywords": [
         "sayomi"
       ],
-      "prepend_prompt": "BIJI_QiPao",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Sayomi(BIJI_QiPao.).safetensors",
+          "weight": 0.9,
+          "trigger_words": [
+            "BIJI_QiPao"
+          ],
+          "prepend_prompt": "BIJI_QiPao",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "swathi": {
       "name": "Swathi",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Swathi(sawali1).safetensors",
-      "weight": 0.9,
       "rank": 125,
       "category": "character",
-      "trigger_words": [
-        "sawali1"
-      ],
       "keywords": [
         "swathi"
       ],
-      "prepend_prompt": "sawali1",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Swathi(sawali1).safetensors",
+          "weight": 0.9,
+          "trigger_words": [
+            "sawali1"
+          ],
+          "prepend_prompt": "sawali1",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     },
     "kriti": {
       "name": "Kriti",
-      "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kriti.safetensors",
-      "weight": 0.8,
       "rank": 127,
       "category": "character",
-      "trigger_words": [],
       "keywords": [
         "kriti"
       ],
-      "prepend_prompt": "",
-      "append_prompt": "",
-      "negative_prompt": "",
       "notes": "No trigger word",
-      "permanent": false
+      "permanent": false,
+      "models": {
+        "flux": {
+          "url": "https://huggingface.co/anujithc/Nimya_LoRAs/resolve/main/Kriti.safetensors",
+          "weight": 0.8,
+          "trigger_words": [],
+          "prepend_prompt": "",
+          "append_prompt": "",
+          "negative_prompt": ""
+        },
+        "zimage": null
+      }
     }
   }
 }

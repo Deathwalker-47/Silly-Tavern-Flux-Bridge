@@ -6,8 +6,8 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Deathwalker-47",
-    "version": "3.0.0",
-    "description": "Characters send photos and videos in chat (helper LLM decides, or every turn), video via Runware/NanoGPT/Sogni/Replicate, character gallery with avatars.",
+    "version": "4.0.0",
+    "description": "Characters send photos and videos in chat, directed by the bridge. Reference slots, Appearance, rated gallery, group turns.",
     "homePage": "https://github.com/Deathwalker-47/Silly-Tavern-Flux-Bridge",
     "auto_update": false
 }

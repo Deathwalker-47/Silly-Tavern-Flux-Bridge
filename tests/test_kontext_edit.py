@@ -37,11 +37,15 @@ def install_test_stubs():
         def get(self, *a, **kw): return lambda fn: fn
         def post(self, *a, **kw): return lambda fn: fn
         def on_event(self, *a, **kw): return lambda fn: fn
+        def include_router(self, *a, **kw): return None
 
     class Request:
         async def json(self): return {}
 
-    class APIRouter: pass
+    class APIRouter:
+        def _route(self, *a, **kw): return lambda fn: fn
+        get = post = put = patch = delete = _route
+
 
     fastapi.FastAPI = FastAPI
     fastapi.HTTPException = HTTPException

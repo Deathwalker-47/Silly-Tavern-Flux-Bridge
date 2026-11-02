@@ -1,4 +1,4 @@
-// Client for the Flux LoRA Bridge (images, video jobs, helper LLM).
+// Client for the Flux LoRA Bridge (jobs, assets, director).
 
 const ctx = () => SillyTavern.getContext();
 const SETTINGS_KEY = 'flux_media';
@@ -14,9 +14,10 @@ export function bridgeBase() {
 }
 
 export class BridgeError extends Error {
-    constructor(message, status = 0) {
+    constructor(message, status = 0, detail = '') {
         super(message);
         this.status = status;
+        this.detail = detail;           // the bridge's own words, without the status prefix
     }
 }
 
@@ -29,7 +30,7 @@ export async function bridge(path, { method = 'GET', body, timeout = 240000 } = 
     const headers = { 'Content-Type': 'application/json' };
     if (token) headers['X-Edit-Token'] = token;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
+    const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;  // 0 = wait as long as it takes
     let res;
     try {
         res = await fetch(`${bridgeBase()}${path}`, {
@@ -48,12 +49,13 @@ export async function bridge(path, { method = 'GET', body, timeout = 240000 } = 
     try { data = await res.json(); } catch { /* non-JSON */ }
     if (!res.ok) {
         const detail = data?.detail ?? data?.error?.message ?? data?.error ?? res.statusText;
-        throw new BridgeError(`Bridge ${res.status}: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}`, res.status);
+        const text = typeof detail === 'string' ? detail : JSON.stringify(detail);
+        throw new BridgeError(`Bridge ${res.status}: ${text}`, res.status, text);
     }
     return data;
 }
 
-/** Cached /media/capabilities (providers, video catalog, helper status). */
+/** Cached /media/capabilities (image and video catalogs, modes, reference window, helper status). */
 export async function getCapabilities(force = false) {
     if (!capabilities || force) capabilities = await bridge('/media/capabilities', { timeout: 15000 });
     return capabilities;
@@ -63,7 +65,26 @@ export function cachedCapabilities() {
     return capabilities;
 }
 
-/** Downloads a bridge-hosted file (e.g. /videos/<id>.mp4) as a Blob. */
+/** Sends a raw file body. Reference uploads go through here. */
+export async function bridgeUpload(path, blob) {
+    const token = ctx().extensionSettings?.[SETTINGS_KEY]?.bridgeToken?.trim();
+    const headers = { 'Content-Type': blob.type || 'application/octet-stream' };
+    if (token) headers['X-Edit-Token'] = token;
+    let res;
+    try {
+        res = await fetch(`${bridgeBase()}${path}`, { method: 'POST', headers, body: blob });
+    } catch (err) {
+        throw new BridgeError(`Cannot reach the bridge at ${bridgeBase()} (${err?.message ?? err})`);
+    }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+        const text = data?.detail ?? res.statusText;
+        throw new BridgeError(`Bridge ${res.status}: ${text}`, res.status, text);
+    }
+    return data;
+}
+
+/** Downloads a bridge-hosted file (/media/files/<id>) as a Blob. */
 export async function bridgeBlob(path) {
     const res = await fetch(`${bridgeBase()}${path}`);
     if (!res.ok) throw new BridgeError(`Could not download ${path} (${res.status})`, res.status);

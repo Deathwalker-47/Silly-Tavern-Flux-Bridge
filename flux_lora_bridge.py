@@ -1,4 +1,9 @@
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")  # first: media/ and Config read the environment on import
+
 # =========================
 # PROVIDER ORDER (UPDATED)
 # =========================
@@ -8,6 +13,8 @@ from pathlib import Path
 # 4. Together (fallback, max 2 LoRAs)
 
 RUNWARE_LORA_MAPPING_FILE = Path(__file__).parent / "runware_lora_mapping.json"
+# Dictionary architecture -> the name Runware uses for uploads and model listings.
+ARCH_RUNWARE = {"flux": "flux1d", "zimage": "z_image"}
 
 def load_runware_lora_mapping():
     if RUNWARE_LORA_MAPPING_FILE.exists():
@@ -19,15 +26,17 @@ def save_runware_lora_mapping(mapping):
         json.dumps(mapping, indent=2)
     )
 
-def generate_air_id_from_url(hf_url):
+def generate_air_id_from_url(hf_url, arch="flux"):
     """Generate a consistent AIR identifier from HuggingFace URL.
     Format: deathwalker:hash@1
+    Flux hashes the plain URL, so LoRAs already uploaded keep their id.
     """
     # Clean the URL for hashing
     clean_url = hf_url.strip().lower()
-    
+
     # Create hash from URL
-    url_hash = hashlib.sha256(clean_url.encode('utf-8')).hexdigest()[:12]
+    seed = clean_url if arch == "flux" else f"{arch}:{clean_url}"
+    url_hash = hashlib.sha256(seed.encode('utf-8')).hexdigest()[:12]
     
     # AIR format: source:id@version
     air_id = f"deathwalker:{url_hash}@1"
@@ -35,10 +44,10 @@ def generate_air_id_from_url(hf_url):
     return air_id, url_hash
 
 
-def upload_lora_to_runware(hf_url, runware_api_key):
+def upload_lora_to_runware(hf_url, runware_api_key, arch):
     """Upload LoRA to Runware by providing download URL - SYNC VERSION."""
     # Generate proper AIR identifier
-    air_id, url_hash = generate_air_id_from_url(hf_url)
+    air_id, url_hash = generate_air_id_from_url(hf_url, arch)
     
     # Extract clean name from URL
     model_name = hf_url.split('/')[-1].replace('.safetensors', '').replace('%20', '_').replace(' ', '_')
@@ -50,7 +59,7 @@ def upload_lora_to_runware(hf_url, runware_api_key):
         "taskUUID": task_uuid,
         "deliveryMethod": "sync",
         "category": "lora",
-        "architecture": "flux1d",
+        "architecture": ARCH_RUNWARE[arch],
         "format": "safetensors",
         "air": air_id,
         "uniqueIdentifier": url_hash,
@@ -73,6 +82,8 @@ def upload_lora_to_runware(hf_url, runware_api_key):
             probe = httpx.head(hf_url, follow_redirects=True, timeout=15).status_code
             if probe in (404, 410):
                 raise Exception(f"LoRA file not found at its URL (HTTP {probe}); was it renamed or deleted?")
+            if probe in (401, 403):
+                raise Exception(f"LoRA file isn't public (HTTP {probe}), so Runware can't download it")
 
         logger.info(f"🌐 [Runware] Uploading {model_name} with AIR: {air_id}")
 
@@ -121,10 +132,10 @@ RUNWARE_UPLOAD_GRACE = 15 * 60      # a fresh upload may not be listed yet
 
 
 def runware_private_loras(runware_api_key):
-    """AIR ids of the account's private models (cached), or None if Runware can't be asked."""
+    """{AIR id: architecture} for the account's private models (cached), or None if Runware can't be asked."""
     if _RUNWARE_MODELS_CACHE["airs"] is not None and time.time() - _RUNWARE_MODELS_CACHE["at"] < RUNWARE_MODELS_TTL:
         return _RUNWARE_MODELS_CACHE["airs"]
-    airs, offset = set(), 0
+    airs, offset = {}, 0
     try:
         while True:
             resp = httpx.post(
@@ -135,7 +146,7 @@ def runware_private_loras(runware_api_key):
             )
             result = ((resp.json().get("data") or [{}])[0]) if resp.status_code == 200 else {}
             batch = result.get("results") or []
-            airs.update(m.get("air") for m in batch if m.get("air"))
+            airs.update({m["air"]: m.get("architecture") for m in batch if m.get("air")})
             offset += len(batch)
             if not batch or offset >= (result.get("totalResults") or 0):
                 break
@@ -147,9 +158,12 @@ def runware_private_loras(runware_api_key):
 
 
 def _mapping_is_stale(entry, visible):
-    """A mapped LoRA Runware doesn't list, uploaded long enough ago to have finished."""
-    if visible is None or entry["runware_id"] in visible:
+    """A mapped LoRA Runware lists under another architecture, or still doesn't list long after uploading."""
+    if visible is None:
         return False
+    if entry["runware_id"] in visible:
+        listed = visible[entry["runware_id"]]
+        return bool(listed) and listed != entry.get("architecture", "flux1d")
     try:
         age = (datetime.utcnow() - datetime.fromisoformat(entry.get("uploaded_at", ""))).total_seconds()
     except ValueError:
@@ -157,7 +171,15 @@ def _mapping_is_stale(entry, visible):
     return age >= RUNWARE_UPLOAD_GRACE
 
 
-def resolve_runware_loras(loras, runware_api_key):
+def mapped_lora(mapping, url, arch, visible):
+    """The uploaded AIR for this file and architecture, or None if it needs uploading."""
+    entry = mapping.get(url)
+    if not entry or entry.get("architecture", "flux1d") != ARCH_RUNWARE[arch]:
+        return None
+    return None if _mapping_is_stale(entry, visible) else entry["runware_id"]
+
+
+def resolve_runware_loras(loras, runware_api_key, arch="flux"):
     """Resolve a list of LoRA descriptors into Runware-usable IDs."""
     mapping = load_runware_lora_mapping()
     updated = False
@@ -188,22 +210,24 @@ def resolve_runware_loras(loras, runware_api_key):
         if src_str.startswith("http://") or src_str.startswith("https://"):
             if src_str in mapping and visible is None:
                 visible = runware_private_loras(runware_api_key)
-            if src_str in mapping and _mapping_is_stale(mapping[src_str], visible):
-                # e.g. an upload that timed out and then failed: Runware rejects the id
-                # ("Invalid value for 'lora.model'"), so upload again (same AIR).
-                logger.warning(f"🌐 [Runware] {mapping[src_str]['runware_id']} is missing on Runware, re-uploading")
-                del mapping[src_str]
-                updated = True
-            if src_str in mapping:
-                runware_id = mapping[src_str]["runware_id"]
+            runware_id = mapped_lora(mapping, src_str, arch, visible)
+            if runware_id:
                 logger.info(f"🌐 [Runware] Found mapping for {src_str} -> {runware_id}")
             else:
+                if src_str in mapping:
+                    # e.g. an upload that timed out and then failed: Runware rejects the id
+                    # ("Invalid value for 'lora.model'"), so upload again. A file moved to
+                    # another architecture lands here too and gets that architecture's AIR.
+                    logger.warning(f"🌐 [Runware] {mapping[src_str]['runware_id']} can't be used for {arch}, re-uploading")
+                    del mapping[src_str]
+                    updated = True
                 try:
                     logger.info(f"🌐 [Runware] Uploading LoRA from URL to Runware: {src_str}")
                     # ✅ Call sync function using asyncio.to_thread()
-                    runware_id = upload_lora_to_runware(src_str, runware_api_key)
+                    runware_id = upload_lora_to_runware(src_str, runware_api_key, arch)
                     mapping[src_str] = {
                         "runware_id": runware_id,
+                        "architecture": ARCH_RUNWARE[arch],
                         "uploaded_at": datetime.utcnow().isoformat()
                     }
                     updated = True
@@ -219,9 +243,10 @@ def resolve_runware_loras(loras, runware_api_key):
         try:
             logger.info(f"🌐 [Runware] Attempting to upload ambiguous LoRA source: {src_str}")
             # ✅ Call sync function using asyncio.to_thread()
-            runware_id = upload_lora_to_runware(src_str, runware_api_key)
+            runware_id = upload_lora_to_runware(src_str, runware_api_key, arch)
             mapping[src_str] = {
                 "runware_id": runware_id,
+                "architecture": ARCH_RUNWARE[arch],
                 "uploaded_at": datetime.utcnow().isoformat()
             }
             updated = True
@@ -253,7 +278,7 @@ Provider Hierarchy (Attempt in Order):
 4. Together
 
 LLM Summarization:
-- DeepSeek V3 via Together AI - 1-3s per request
+- Helper LLM (NanoGPT) - a few seconds per request
 - Removes GLM slop, keeps visual details
 
 COMPREHENSIVE LOGGING - Every data point logged
@@ -286,7 +311,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-import media_studio as ms  # video providers + helper LLM (see media_studio.py)
+import media as ms  # helper LLM and Replicate client; the rest of Media Studio is in media/
+from media import keys as media_keys, loras as media_loras, routes as media_routes
+from media.jobs import runner as media_jobs
+from lora_dict import check_unique_urls, flat_entry, migrate_dict
 
 app = FastAPI()
 from fastapi.middleware.cors import CORSMiddleware
@@ -408,20 +436,13 @@ class Config:
     REPLICATE_FLUX_MODEL = os.getenv("REPLICATE_FLUX_MODEL", "lucataco/flux-dev-multi-lora")
     MAXLORAS_REPLICATE = int(os.getenv("MAXLORAS_REPLICATE", 6))
 
-    # ---- Media Studio: character images from avatars (no LoRA) ----
-    # Separate from KONTEXT_MODEL, which the Immich editor uses. Kontext [dev] is open
-    # weights, so there is no hosted-model content filter in front of it.
-    AVATAR_KONTEXT_MODEL = os.getenv("AVATAR_KONTEXT_MODEL", "runware:106@1")
-
-    # DeepSeek V3 Summarization: runs on the helper LLM (NanoGPT) when configured,
-    # Together AI is only the legacy fallback. See media_studio.HelperLLM.backend().
-    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")
-    DEEPSEEK_MODEL = "deepseek-ai/DeepSeek-V3"
+    # Prompt summarization runs on the helper LLM. See media/helper.py.
+    TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")  # deprecated image client only
     ENABLE_SUMMARIZATION = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
     SUMMARY_MAX_LENGTH = int(os.getenv("SUMMARY_MAX_LENGTH", 300))
 
     # Multi-character inpainting pipeline
-    MULTI_CHAR_ENABLED = os.getenv("MULTI_CHAR_ENABLED", "true").lower() == "true"
+    MULTI_CHAR_ENABLED = os.getenv("MULTI_CHAR_ENABLED", "false").lower() == "true"
     MULTI_CHAR_MAX = int(os.getenv("MULTI_CHAR_MAX", 5))
     MULTI_CHAR_2CHAR_SKIP_BG = os.getenv("MULTI_CHAR_2CHAR_SKIP_BG", "true").lower() == "true"
     MULTI_CHAR_FEATHER_PX = int(os.getenv("MULTI_CHAR_FEATHER_PX", 40))
@@ -454,9 +475,8 @@ class Config:
         logger.info(f"LoRA Dictionary: {cls.LORA_DICT_PATH}")
         logger.info(f"Max LoRAs - Wavespeed: {cls.MAXLORAS_WAVESPEED}, Runware: {cls.MAXLORAS_RUNWARE}, FAL: {cls.MAXLORAS_FAL}, Together: {cls.MAXLORAS_TOGETHER}")
         logger.info("")
-        logger.info("LLM SUMMARIZATION - DeepSeek V3 via Together AI")
+        logger.info("LLM SUMMARIZATION")
         logger.info(f"  Enabled: {cls.ENABLE_SUMMARIZATION}")
-        logger.info(f"  Model: {cls.DEEPSEEK_MODEL}")
         logger.info(f"  Max Summary Length: {cls.SUMMARY_MAX_LENGTH} tokens")
         logger.info(f"  Estimated Delay: 1-3 seconds per request")
         logger.info("")
@@ -469,12 +489,12 @@ class Config:
         logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION and helper_label != 'none' else '❌'} Prompt summarization - {helper_label}/{helper_model or 'n/a'}")
         logger.info("")
         logger.info("MEDIA STUDIO:")
-        for provider in ("runware", "nanogpt", "sogni", "replicate", "mock"):
+        for provider in ms.PROVIDERS:
             if provider == "mock" and not ms.MediaConfig.VIDEO_MOCK_PROVIDER:
                 continue
-            logger.info(f"  {'✅' if ms.provider_configured(provider) else '❌'} Video: {ms.PROVIDER_LABELS[provider]}")
+            logger.info(f"  {'✅' if ms.provider_configured(provider) else '❌'} {ms.PROVIDER_LABELS[provider]}")
         logger.info(f"  {'✅' if ms.helper.configured else '❌'} Helper LLM: {ms.helper.backend()[3]}/{ms.helper.backend()[2] or 'n/a'}")
-        logger.info(f"  Avatar images (no LoRA): Kontext {cls.AVATAR_KONTEXT_MODEL}")
+        logger.info(f"  Director: {ms.MediaConfig.DIRECTOR_MODEL} | data: {ms.MediaConfig.DATA_DIR}")
         logger.info("")
         logger.info("FLUX KONTEXT IMAGE EDIT (POST /edit):")
         logger.info(f"  Model: {cls.KONTEXT_MODEL} | steps: {cls.KONTEXT_STEPS} | CFG: {cls.KONTEXT_CFG} | timeout: {cls.KONTEXT_TIMEOUT}s")
@@ -549,26 +569,18 @@ LAYOUT_TEMPLATES: Dict[int, Dict] = {
 # DEEPSEEK V3 SUMMARIZER (MULTI-CHAR + EXPLICIT NSFW)
 # ============================================
 class DeepSeekSummarizer:
-    """DeepSeek V3 via Together AI - Visual prompt extraction for Flux (1-3s delay)"""
-    
-    def __init__(self, apikey: str):
-        self.apikey = apikey
-        self.baseurl = "https://api.together.xyz/v1/chat/completions"
-        self.model = Config.DEEPSEEK_MODEL
-        logger.info(f"🤖 DeepSeek V3 Summarizer initialized with Together AI API")
-    
+    """Visual prompt extraction for Flux, on the helper LLM"""
+
     async def summarize_prompt(self, prompt: str, maxlength: int = 300, required_names: list = None) -> str:
         """Extract visual prompt from narrative, preserving explicit content and multi-char positions"""
-        
-        # Helper LLM (NanoGPT) when configured; Together AI is the legacy fallback.
-        llm_url, llm_key, llm_model, llm_backend = ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)
-        if not llm_key:
-            logger.warning("⚠️  No helper LLM or Together API key, using original prompt")
+
+        if not ms.helper.configured:
+            logger.warning("⚠️  No helper LLM key, using original prompt")
             return prompt
 
         starttime = time.time()
-        logger.info(f"🤖 [DeepSeek V3] Starting summarization of {len(prompt.split())} words")
-        logger.info(f"🤖 [DeepSeek V3] Input prompt: {prompt[:200]}..." if len(prompt) > 200 else f"🤖 [DeepSeek V3] Input prompt: {prompt}")
+        logger.info(f"🤖 [Summarizer] Starting summarization of {len(prompt.split())} words")
+        logger.info(f"🤖 [Summarizer] Input prompt: {prompt[:200]}..." if len(prompt) > 200 else f"🤖 [Summarizer] Input prompt: {prompt}")
         name_rule = ""
         if required_names:
             name_rule = f"\n\nMANDATORY WORDS TO INCLUDE: {', '.join(required_names)} - these MUST appear in your output, they are lora triggers"
@@ -599,50 +611,28 @@ Remove: dialogue, internal thoughts, meta-commentary, filler text, repetition.
 Output ONLY the visual prompt. No explanations. {name_rule}"""
 
         user_message = f"Extract visual prompt in {maxlength} words max:\n\n{prompt}"
-        
-        payload = {
-            "model": llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            "max_tokens": maxlength + 50,
-            "temperature": 0.2,
-            "top_p": 0.85
-        }
-
-        headers = {
-            "Authorization": f"Bearer {llm_key}",
-            "Content-Type": "application/json"
-        }
 
         try:
-            logger.info(f"🤖 [DeepSeek V3] Sending to {llm_backend} ({llm_model})...")
-            api_start = time.time()
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.post(llm_url, json=payload, headers=headers)
-            api_elapsed = time.time() - api_start
-            
-            if response.status_code != 200:
-                logger.error(f"🤖 [DeepSeek V3] API error {response.status_code}: {response.text}")
+            summary = await ms.helper.chat(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
+                model=ms.MediaConfig.SUMMARIZER_MODEL or None, max_tokens=maxlength + 50, temperature=0.2, timeout=30,
+            )
+            if not summary:
+                logger.warning("🤖 [Summarizer] Empty reply, using original prompt")
                 return prompt
-            
-            data = response.json()
-            summary = data["choices"][0]["message"]["content"].strip()
-            
-            total_elapsed = time.time() - starttime
+
             original_words = len(prompt.split())
             summary_words = len(summary.split())
             compression = (1 - (summary_words / original_words)) * 100
-            
-            logger.info(f"🤖 [DeepSeek V3] Completed in {total_elapsed:.2f}s (API: {api_elapsed:.2f}s)")
-            logger.info(f"🤖 [DeepSeek V3] Compression: {original_words} → {summary_words} words ({compression:.1f}% reduction)")
-            logger.info(f"🤖 [DeepSeek V3] Summary: {summary[:150]}..." if len(summary) > 150 else f"🤖 [DeepSeek V3] Summary: {summary}")
-            
+
+            logger.info(f"🤖 [Summarizer] Completed in {time.time() - starttime:.2f}s")
+            logger.info(f"🤖 [Summarizer] Compression: {original_words} → {summary_words} words ({compression:.1f}% reduction)")
+            logger.info(f"🤖 [Summarizer] Summary: {summary[:150]}..." if len(summary) > 150 else f"🤖 [Summarizer] Summary: {summary}")
+
             return summary
-            
+
         except Exception as e:
-            logger.error(f"🤖 [DeepSeek V3] Error: {e}, using original prompt")
+            logger.error(f"🤖 [Summarizer] Error: {e}, using original prompt")
             return prompt
 
 # ============================================
@@ -695,7 +685,9 @@ class LoRAManager:
     
     def load_dict(self) -> Dict:
         with open(self.dictpath, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = migrate_dict(json.load(f))  # a file that wasn't converted yet still loads
+        check_unique_urls(data)
+        return data
     
     def get_permanent_loras(self) -> List[str]:
         return self.loradict.get("config", {}).get("permanent_loras", [])
@@ -716,8 +708,12 @@ class LoRAManager:
             pruned_lora_list.append(lora_data)
         return pruned_lora_list
 
-    def match_loras_by_keywords(self, prompt: str, negative_prompt: str) -> List[Dict]:
-        """Match LoRAs - case-insensitive, all matches, no duplicates"""
+    def match_loras_by_keywords(self, prompt: str, negative_prompt: str, arch: str = "flux") -> List[Dict]:
+        """Match LoRAs - case-insensitive, all matches, no duplicates.
+
+        Each match's "data" is flat (shared fields plus this architecture's file).
+        Entries with no file for this architecture are skipped.
+        """
         matched = []
         seen_ids = set()
         
@@ -732,8 +728,8 @@ class LoRAManager:
         permanent_loras = self.get_permanent_loras()
         logger.debug(f"📚 [LoRA Match] Permanent LoRAs configured: {permanent_loras}")
         for lora_id in permanent_loras:
-            if lora_id in self.loradict.get('loras', {}):
-                lora_data = self.loradict['loras'][lora_id]
+            lora_data = flat_entry(self.loradict.get('loras', {}).get(lora_id, {}), arch)
+            if lora_data:
                 matched.append({
                     "id": lora_id,
                     "data": lora_data,
@@ -744,8 +740,9 @@ class LoRAManager:
         
         # Then match keywords
         logger.debug(f"📚 [LoRA Match] Starting keyword matching...")
-        for lora_id, lora_data in self.loradict.get('loras', {}).items():
-            if lora_id in seen_ids:
+        for lora_id, entry in self.loradict.get('loras', {}).items():
+            lora_data = flat_entry(entry, arch)
+            if lora_id in seen_ids or not lora_data:
                 continue
 
             keywords = lora_data.get("keywords", [])
@@ -2128,34 +2125,13 @@ class MultiCharPipeline:
     # ── Internal helpers ──────────────────────────────────────────────────
 
     async def _call_deepseek(self, system_prompt: str, user_message: str, max_tokens: int = 800) -> str:
-        """Thin wrapper around the helper LLM (Together AI as fallback) for decomposition calls."""
-        llm_url, llm_key, llm_model, _backend = ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)
-        if not llm_key:
-            raise ValueError("No helper LLM or TOGETHER_API_KEY configured — cannot decompose scene")
-
-        payload = {
-            "model": llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "top_p": 0.85,
-        }
-        headers = {
-            "Authorization": f"Bearer {llm_key}",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                llm_url,
-                json=payload,
-                headers=headers,
-            )
-        if resp.status_code != 200:
-            raise ValueError(f"DeepSeek decompose API error {resp.status_code}: {resp.text[:200]}")
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        """Thin wrapper around the helper LLM for decomposition calls."""
+        if not ms.helper.configured:
+            raise ValueError("No helper LLM configured — cannot decompose scene")
+        return await ms.helper.chat(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}],
+            model=ms.MediaConfig.SUMMARIZER_MODEL or None, max_tokens=max_tokens, temperature=0.2, timeout=30,
+        )
 
     async def _generate_pass(
         self,
@@ -2474,7 +2450,7 @@ class MultiCharPipeline:
 # ============================================
 provider_state = ProviderState()
 lora_manager = LoRAManager(Config.LORA_DICT_PATH)
-deepseek_summarizer = DeepSeekSummarizer(Config.TOGETHER_API_KEY)
+deepseek_summarizer = DeepSeekSummarizer()
 clients = {
     "runware": RunwareClient(Config.RUNWARE_API_KEY),
     "replicate": ReplicateClient(Config.REPLICATE_API_TOKEN),
@@ -2548,52 +2524,6 @@ class Txt2ImgResponse(BaseModel):
 
 # ---- Media Studio ----
 
-class MediaImageRequest(BaseModel):
-    prompt: str = Field(default="", description="Scene text: raw narrative or a visual prompt")
-    negative_prompt: str = Field(default="")
-    mode: str = Field(default="auto", description="auto | lora | avatar")
-    character_name: str = Field(default="")
-    character_prompts: dict = Field(default_factory=dict)
-    visible_characters: list = Field(default_factory=list)
-    avatars: list = Field(default_factory=list, description="Character avatars (data URI/URL); first = main")
-    width: int = Field(default=1024)
-    height: int = Field(default=1024)
-    steps: int = Field(default=40)
-    cfg_scale: float = Field(default=3.5)
-    seed: int = Field(default=-1)
-
-
-class LoraStatusRequest(BaseModel):
-    names: list = Field(default_factory=list)
-    character_prompts: dict = Field(default_factory=dict)
-
-
-class VideoGenerateRequest(BaseModel):
-    provider: str = Field(default="runware")
-    family: str = Field(default="ltx-2.5", description="ltx-2.3 | ltx-2.5 | wan-2.2 | wan-2.7 | seedance-1.5 | seedance-2.0 | minimax-h3")
-    variant: Optional[str] = Field(default=None, description="Exact model id; default = the provider's first variant")
-    prompt: str = Field(default="", description="Motion prompt")
-    negative_prompt: str = Field(default="")
-    image: Optional[str] = Field(default=None, description="First frame (data URI, base64 or URL)")
-    last_image: Optional[str] = Field(default=None, description="Optional last frame")
-    keyframe: Optional[MediaImageRequest] = Field(default=None, description="Generate the first frame first when no image is given")
-    duration: Optional[float] = Field(default=None)
-    resolution: Optional[str] = Field(default=None)
-    seed: int = Field(default=-1)
-    audio: bool = Field(default=False)
-    sogni_network: str = Field(default="", description="Sogni only: fast (billed) | relaxed (free, slow); empty = SOGNI_NETWORK")
-
-
-class HelperDecideRequest(BaseModel):
-    messages: list = Field(default_factory=list, description="[{name, is_user, text}] oldest first")
-    char: str = Field(default="")
-    user: str = Field(default="")
-    allow_image: bool = Field(default=True)
-    allow_video: bool = Field(default=True)
-    force: Optional[str] = Field(default=None, description="image | video: skip the decision, just write prompts")
-    model: Optional[str] = Field(default=None)
-
-
 class VoiceTagsRequest(BaseModel):
     text: str = Field(default="")
     char: str = Field(default="")
@@ -2609,8 +2539,15 @@ class VoiceTagsRequest(BaseModel):
 async def startup_event():
     logger.setLevel(getattr(logging, Config.LOG_LEVEL, logging.INFO))
     logger.info("")
-    logger.info("🚀 Flux LoRA Bridge with DeepSeek V3 starting...")
+    logger.info("🚀 Flux LoRA Bridge starting...")
     Config.print_config()
+    await media_jobs.startup()      # picks up jobs left running by the last restart
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await media_jobs.shutdown()     # their rows stay open for the next start
+
 
 @app.get("/")
 async def root():
@@ -2618,7 +2555,7 @@ async def root():
         "service": "Flux LoRA Bridge",
         "version": "3.0.0",
         "status": "running",
-        "features": "DeepSeek V3 prompt summarization, Keyword-based LoRA injection, Multi-provider fallback (Runware, Wavespeed, FAL, Together), FLUX Kontext instruction editing (POST /edit, GET /edit-ui), Comprehensive logging"
+        "features": "Helper LLM prompt summarization, Keyword-based LoRA injection, Multi-provider fallback (Runware, Wavespeed, FAL, Together), FLUX Kontext instruction editing (POST /edit, GET /edit-ui), Comprehensive logging"
     }
 
 @app.get("/sdapi/v1/options")
@@ -2639,7 +2576,7 @@ async def get_status():
         "status": "running",
         "providers": provider_state.get_provider_list(),
         "summarization_enabled": Config.ENABLE_SUMMARIZATION,
-        "model": "DeepSeek V3 via Together AI",
+        "model": ms.helper.backend(ms.MediaConfig.SUMMARIZER_MODEL or None)[2],
         "estimated_delay": "1-3 seconds",
         "total_loras": len(lora_manager.loradict.get('loras', {}))
     }
@@ -3095,7 +3032,7 @@ async def edit_ui():
 
 @app.post("/sdapi/v1/txt2img")
 async def txt2img(request: Txt2ImgRequest):
-    """AUTOMATIC1111-compatible txt2img with DeepSeek V3 summarization
+    """AUTOMATIC1111-compatible txt2img with helper LLM summarization
     
     DELAY BREAKDOWN:
     - LoRA matching: 100-200ms
@@ -3326,203 +3263,21 @@ async def txt2img(request: Txt2ImgRequest):
 
 
 # ============================================
-# MEDIA STUDIO (character images, video, helper LLM)
+# MEDIA STUDIO (see media/; these routes serve TavernVoice too)
 # ============================================
 
-def _character_has_lora(name: str, sd_prompt: str = "") -> bool:
-    """True when a character-category LoRA keyword-matches the character's name or SD prompt."""
-    if not (name or "").strip() and not (sd_prompt or "").strip():
-        return False
-    matched = lora_manager.match_loras_by_keywords(f"{name} {sd_prompt}", "")
-    return any(m.get("reason") != "permanent" and m["data"].get("category") == "character" for m in matched)
+media_routes.use_token_check(_check_edit_token, lambda: bool(Config.EDIT_API_TOKEN))
+media_loras.use(lora_manager, resolve_runware_loras)
+app.include_router(media_routes.router)
 
 
-async def _media_image(req: MediaImageRequest, req_id: str = "") -> Tuple[bytes, Dict]:
-    """One character image, choosing LoRA txt2img or avatar-based Kontext.
-
-    mode=lora   always the txt2img LoRA pipeline
-    mode=avatar Kontext from the avatars (falls back to txt2img when none were sent)
-    mode=auto   LoRA when the character has one, avatar otherwise
-    """
-    req_id = req_id or uuid.uuid4().hex[:8]
-    name = (req.character_name or "").strip()
-    sd_prompt = (req.character_prompts or {}).get(name, "") if name else ""
-    has_lora = _character_has_lora(name, sd_prompt)
-    mode = (req.mode or "auto").lower()
-    avatars = [a for a in (req.avatars or []) if isinstance(a, str) and a.strip()]
-    use_avatar = bool(avatars) and (mode == "avatar" or (mode == "auto" and not has_lora))
-    logger.info(f"🎭 [Media {req_id}] character={name or '-'} mode={mode} has_lora={has_lora} avatars={len(avatars)} -> {'avatar' if use_avatar else 'txt2img'}")
-
-    if not use_avatar:
-        result = await txt2img(Txt2ImgRequest(
-            prompt=req.prompt, negative_prompt=req.negative_prompt, steps=req.steps, cfg_scale=req.cfg_scale,
-            width=req.width, height=req.height, seed=req.seed,
-            character_prompts=req.character_prompts or {}, visible_characters=req.visible_characters or [],
-        ))
-        image_bytes = base64.b64decode(result.images[0])
-        return image_bytes, {
-            "mode": "lora" if has_lora else "text",
-            "has_lora": has_lora,
-            "image_url": (result.image_urls or [None])[0],
-            "prompt": result.parameters.get("final_prompt") or result.parameters.get("summarized_prompt"),
-        }
-
-    scene = req.prompt
-    if Config.ENABLE_SUMMARIZATION and scene:
-        scene = await deepseek_summarizer.summarize_prompt(scene, Config.SUMMARY_MAX_LENGTH, required_names=[name] if name else None)
-    who = name or "the person"
-    instruction = (
-        f"Create a new photo of {who}, the same person shown in the reference image: {scene}. "
-        f"Keep {who}'s face, hairstyle, skin tone and body exactly as in the reference image; "
-        f"change pose, clothing, expression and setting as described."
-    )
-    references, _w, _h = await _prepare_kontext_inputs(avatars[0], avatars[1] if len(avatars) > 1 else None, req_id)
-    width, height = _closest_kontext_size(req.width, req.height)
-    image_bytes = await clients["runware"].edit(
-        instruction, references, {"width": width, "height": height, "model": Config.AVATAR_KONTEXT_MODEL}
-    )
-    _validate_image_bytes(image_bytes, "AvatarKontext")
-    return image_bytes, {
-        "mode": "avatar",
-        "has_lora": has_lora,
-        "image_url": _publish_image_url(image_bytes),
-        "prompt": instruction,
-    }
+def _copy_keys_to_clients():
+    Config.RUNWARE_API_KEY = clients["runware"].api_key = media_keys.MediaConfig.RUNWARE_API_KEY
+    Config.REPLICATE_API_TOKEN = clients["replicate"].api_token = media_keys.MediaConfig.REPLICATE_API_TOKEN
 
 
-@app.get("/media/capabilities")
-async def media_capabilities():
-    """Everything the SillyTavern extension needs to build its settings menus."""
-    return JSONResponse({
-        "image": {
-            "providers": [{"id": p, "configured": bool(getattr(clients.get(p), "api_key", None) or getattr(clients.get(p), "api_token", None))}
-                          for p in provider_state.get_provider_list()],
-            "avatar_model": Config.AVATAR_KONTEXT_MODEL,
-            "modes": ["auto", "lora", "avatar"],
-        },
-        "video": ms.public_catalog(),
-        "helper": {
-            "configured": ms.helper.configured,
-            "backend": ms.helper.backend()[3],
-            "default_model": ms.helper.backend()[2],
-        },
-        "token_required": bool(Config.EDIT_API_TOKEN),
-    })
-
-
-@app.post("/media/lora-status")
-async def media_lora_status(request: LoraStatusRequest):
-    prompts = request.character_prompts or {}
-    return JSONResponse({"characters": {n: _character_has_lora(n, prompts.get(n, "")) for n in request.names or []}})
-
-
-@app.post("/media/image")
-async def media_image(request: MediaImageRequest, http_request: Request = None):
-    """Character image: LoRA txt2img or avatar-based Kontext (see _media_image)."""
-    _check_edit_token(http_request)
-    req_id = uuid.uuid4().hex[:8]
-    try:
-        image_bytes, meta = await _media_image(request, req_id)
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"🎭 [Media {req_id}] FAILED: {e}")
-        raise HTTPException(status_code=502, detail=f"Image generation failed: {e}")
-    return JSONResponse({
-        "images": [base64.b64encode(image_bytes).decode("utf-8")],
-        "image_urls": [meta["image_url"]] if meta.get("image_url") else [],
-        "mode": meta["mode"],
-        "has_lora": meta["has_lora"],
-        "parameters": meta,
-    })
-
-
-@app.post("/video/generate")
-async def video_generate(request: VideoGenerateRequest, http_request: Request = None):
-    """Start a video job and return its id; poll GET /video/jobs/{id}.
-
-    Videos take 30s to several minutes, longer than most proxies allow for a
-    single request, so this never blocks on the render.
-    """
-    _check_edit_token(http_request)
-    provider = (request.provider or "").lower()
-    if provider not in ms.PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unknown video provider '{request.provider}'")
-    if not ms.provider_configured(provider):
-        raise HTTPException(status_code=400, detail=f"{ms.PROVIDER_LABELS.get(provider, provider)} is not configured on the bridge")
-    try:
-        variant = ms.find_variant(provider, request.family, request.variant)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not (request.image or "").strip() and request.keyframe is None:
-        raise HTTPException(status_code=400, detail="Send an image (first frame) or a keyframe request")
-
-    prompt = (request.prompt or "").strip() or "natural subtle motion, the person breathes, blinks and shifts slightly, gentle camera push-in"
-    duration = variant.pick_duration(request.duration)
-    resolution = variant.pick_resolution(request.resolution)
-
-    async def run(job: ms.VideoJob) -> bytes:
-        report = ms.reporter(job)
-        if (request.image or "").strip():
-            raw = await _load_edit_image_bytes(request.image, "image")
-        else:
-            report("keyframe", "Generating the first frame")
-            raw, _meta = await _media_image(request.keyframe, job.id[:8])
-            job.keyframe_b64 = base64.b64encode(raw).decode("utf-8")
-            job.keyframe_generated = True
-        image, _w, _h = _normalize_edit_image(raw, "image")
-        last = None
-        if (request.last_image or "").strip() and variant.last_frame:
-            last, _w2, _h2 = _normalize_edit_image(await _load_edit_image_bytes(request.last_image, "last_image"), "last_image")
-        vreq = ms.VideoRequest(
-            provider=provider, family=request.family, variant=variant, prompt=prompt, image=image,
-            last_image=last, negative_prompt=request.negative_prompt or "", duration=duration,
-            resolution=resolution, seed=request.seed, audio=request.audio,
-            sogni_network=request.sogni_network,
-        )
-        return await ms.PROVIDERS[provider].generate(vreq, report)
-
-    job = ms.video_jobs.create(provider, request.family, variant.id, run)
-    logger.info(f"🎬 [Video {job.id}] queued {provider}/{variant.id} {duration}s @ {resolution}")
-    return JSONResponse({
-        "job_id": job.id, "status": job.status, "provider": provider,
-        "variant": variant.id, "duration": duration, "resolution": resolution,
-    })
-
-
-@app.get("/video/jobs/{job_id}")
-async def video_job(job_id: str):
-    job = ms.video_jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown or expired job")
-    return JSONResponse(job.to_public())
-
-
-@app.get("/videos/{video_id}")
-async def get_video(video_id: str):
-    from fastapi.responses import Response  # imported lazily; not part of the test stubs
-    data = ms.video_store.get(video_id.rsplit(".", 1)[0])
-    if data is None:
-        raise HTTPException(status_code=404, detail="Video not found or expired")
-    return Response(content=data, media_type="video/mp4",
-                    headers={"Cache-Control": f"public, max-age={ms.MediaConfig.VIDEO_STORE_TTL}"})
-
-
-@app.post("/helper/decide")
-async def helper_decide(request: HelperDecideRequest, http_request: Request = None):
-    """Should the character send a photo or a video now? Also writes the prompts."""
-    _check_edit_token(http_request)
-    try:
-        return JSONResponse(await ms.helper.decide(
-            messages=request.messages, char=request.char, user=request.user,
-            allow_image=request.allow_image, allow_video=request.allow_video,
-            force=request.force, model=request.model,
-        ))
-    except Exception as e:
-        logger.error(f"🧠 [Helper] decide failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Helper LLM failed: {e}")
+media_keys.on_change(_copy_keys_to_clients)
+media_keys.apply()
 
 
 @app.post("/helper/voice-tags")
