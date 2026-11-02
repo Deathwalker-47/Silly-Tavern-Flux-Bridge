@@ -205,6 +205,8 @@ class Handler(BaseHTTPRequestHandler):
                      "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
             return self._send(200, raw=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode(), ctype="text/event-stream")
         if self.path.startswith("/nanogpt"):
+            if (self.headers.get("x-api-key") or "").startswith("bad"):
+                return self._send(401, {"error": "invalid key"})
             reply = nanogpt(self.path[len("/nanogpt"):], body)
             return self._send(200 if reply else 404, reply or {"error": "not found"})
         if self.path.startswith("/pixeldojo/models/"):

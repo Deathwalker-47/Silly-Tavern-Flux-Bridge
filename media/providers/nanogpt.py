@@ -14,7 +14,7 @@ import httpx
 
 from .. import assets
 from ..config import MediaConfig
-from .base import (Provider, RenderRequest, RenderResult, closest_ratio, download, error_text, image_size, send,
+from .base import (Provider, RenderRequest, RenderResult, check_key, closest_ratio, download, error_text, image_size, send,
                    sniff_mime, to_data_uri)
 
 MAX_REQUEST = 4_400_000
@@ -156,6 +156,7 @@ class NanoGPT(Provider):
     async def balance(self) -> Optional[Dict[str, Any]]:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(f"{MediaConfig.NANOGPT_BASE}/check-balance", headers=self._headers())
+        check_key(resp)
         if resp.status_code != 200:
             return None
         payload = resp.json() or {}

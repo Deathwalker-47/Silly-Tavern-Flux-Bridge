@@ -75,7 +75,7 @@ Return base64 image
 
 - **Python**: No linter/formatter configured. Follow existing code style (type hints on function signatures, f-strings, logging with emoji prefixes per provider).
 - **JavaScript (plugin)**: Vanilla JS, no build step. Uses MutationObserver pattern.
-- **Environment**: All secrets via `.env` file only. Never hardcode API keys.
+- **Environment**: Secrets via `.env`, or `data/keys.json` when saved from settings (`media/keys.py`; write-only, needs EDIT_API_TOKEN). Never in SillyTavern settings, except TavernVoice's xAI key, which the browser must use. Never hardcode API keys.
 - **Logging**: Use Python `logging` module. Include provider-specific emoji prefixes (e.g., `🌐 [Runware]`, `🤖 [DeepSeek]`). Redact long prompts and sensitive content.
 - **Error handling**: Each provider call should be wrapped in try/except with fallback to next provider.
 

@@ -328,6 +328,9 @@
     }
 }
 
+.fm-key-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; margin-top: 6px; }
+.fm-key-row input { grid-column: 1 / -1; }
+.fm-key-row .menu_button { margin: 0; }
 .fm-failed-route { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 
 /* SillyTavern ships only Font Awesome's solid weight, so fa-regular draws solid too. */

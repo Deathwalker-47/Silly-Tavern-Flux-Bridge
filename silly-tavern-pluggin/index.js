@@ -165,6 +165,9 @@ async function autoMedia(messageId, mode) {
     const c = ctx();
     const msg = c.chat[messageId];
     if (mode === 'off' || !msg) return;
+    const imageReady = routeReady('image');
+    const videoReady = routeReady('video');
+    if (!imageReady && !videoReady) return track('auto_skip', { reason: 'no_provider' });
     const { chid, char } = characterOf(msg);
     const profile = await getCharProfile(chid);
     if (profile.auto === false) return track('auto_skip', { reason: 'character_off' });
@@ -172,14 +175,13 @@ async function autoMedia(messageId, mode) {
     const u = usage();
 
     if (mode === 'every_turn') {
+        if (!imageReady) return track('auto_skip', { reason: 'no_provider' });
         if (!underCap(u.images, s.dailyImageCap)) return track('auto_skip', { reason: 'image_cap' });
         return generate('image', messageId, { origin: 'auto' });
     }
 
     // Cooldowns and caps are enforced here, not left to the LLM.
-    const providers = cachedCapabilities()?.video?.providers ?? [];
-    const videoReady = !!providers.find(p => p.id === s.video.provider)?.configured;
-    const allowImage = s.allowAutoImages && messagesSinceMedia('image') >= Number(s.imageCooldown) && underCap(u.images, s.dailyImageCap);
+    const allowImage = s.allowAutoImages && imageReady && messagesSinceMedia('image') >= Number(s.imageCooldown) && underCap(u.images, s.dailyImageCap);
     const allowVideo = s.allowAutoVideos && videoReady && messagesSinceMedia('video') >= Number(s.videoCooldown) && underCap(u.videos, s.dailyVideoCap);
     if (!allowImage && !allowVideo) return track('auto_skip', { reason: 'cooldown_or_cap' });
     try {
@@ -237,6 +239,8 @@ const routeInfo = (kind) => {
     return { caps, provider, family, variant };
 };
 
+const routeReady = (kind) => !!routeInfo(kind).provider?.configured;
+
 /** A saved route the bridge dropped falls back to the default, then to anything configured. */
 function keepRouteValid(kind) {
     const s = settings();
@@ -262,10 +266,15 @@ function keepRouteValid(kind) {
 
 function renderPicker(kind) {
     const s = settings();
-    const { caps, provider, family, variant } = routeInfo(kind);
+    const info = routeInfo(kind);
+    const { caps } = info;
     if (!caps) return;
-    $(`#fm_${kind}_provider`).html(caps.providers.filter(p => p.families.length).map(p =>
-        `<option value="${p.id}" ${p.id === s[kind].provider ? 'selected' : ''} ${p.configured ? '' : 'disabled'}>${esc(p.label)}${p.configured ? '' : ' (no key on bridge)'}</option>`).join(''));
+    const ready = routeReady(kind);          // a keyless provider shows nothing, not its models
+    const provider = ready ? info.provider : null;
+    const family = ready ? info.family : null;
+    const variant = ready ? info.variant : null;
+    $(`#fm_${kind}_provider`).html(caps.providers.filter(p => p.configured && p.families.length).map(p =>
+        `<option value="${p.id}" ${p.id === s[kind].provider ? 'selected' : ''}>${esc(p.label)}</option>`).join('') || '<option value="">Add an API key above</option>');
     $(`#fm_${kind}_family`).html((provider?.families || []).map(f =>
         `<option value="${esc(f.id)}" ${f.id === s[kind].family ? 'selected' : ''}>${esc(f.label)}</option>`).join('') || '<option value="">No models</option>');
     $(`#fm_${kind}_variant`).html((family?.variants || []).map(v =>
@@ -304,6 +313,92 @@ async function refreshBridgeStatus({ quiet = true } = {}) {
         $s.removeClass('fm-ok').addClass('fm-bad').text(err?.message || 'Not connected');
         if (!quiet) toastr.error(err?.message || String(err), 'Media Studio');
     }
+    renderKeys();
+}
+
+// ---------------------------------------------------------------------------
+// Settings: API keys
+// ---------------------------------------------------------------------------
+
+/** A key must not cross the internet in the clear. */
+const safeBridge = () => /^https:|^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(bridgeBase());
+const voiceSettings = () => ctx().extensionSettings?.tavern_voice;
+
+const keyRow = (id, label, status, canClear, disabled) => `<div class="fm-key-row">
+    <span>${esc(label)} <small>${esc(status)}</small></span>
+    ${canClear ? `<span class="fm-key-clear menu_button" data-key="${id}" data-label="${esc(label)}">Clear</span>` : '<span></span>'}
+    <input class="text_pole" type="password" autocomplete="new-password" data-key="${id}" data-label="${esc(label)}" ${disabled ? 'disabled' : ''} placeholder="Paste a new key">
+</div>`;
+
+async function renderKeys() {
+    if ($('#fm_keys input').filter((_, el) => el.value).length) return;      // never wipe a key being typed
+    let state = null;
+    try {
+        state = await bridge('/media/keys', { timeout: 15000 });
+    } catch (err) {
+        log('keys', err);
+    }
+    if ($('#fm_keys input').filter((_, el) => el.value).length) return;
+    const canWrite = !!state?.writable && safeBridge();
+    const rows = (state?.keys ?? []).map((k) => {
+        const tail = k.hint ? ` ending ${k.hint}` : '';
+        const status = k.source === 'settings' ? `saved${tail}` : k.source === 'env' ? `in .env${tail}` : 'no key';
+        return keyRow(k.id, k.label, status, k.source === 'settings' && canWrite, !canWrite);
+    });
+    const voice = voiceSettings();
+    if (voice) rows.push(keyRow('xai', 'xAI (TavernVoice)', voice.apiKey ? 'saved in SillyTavern' : 'no key here', !!voice.apiKey, false));
+    $('#fm_keys').html(rows.join(''));
+    $('#fm_keys_note').text(!state ? "Can't reach the bridge, so provider keys can't be read or changed."
+        : !state.writable ? 'Set EDIT_API_TOKEN on the bridge and fill in Bridge token to change keys here. Keys in .env still work.'
+            : !safeBridge() ? 'This bridge address is plain http, so keys stay off the wire. Use https.'
+                : 'Keys are stored on the bridge and never sent back. A saved key replaces the one in .env.');
+}
+
+function setVoiceKey(key) {
+    const $field = $('#tv_api_key');
+    if ($field.length) {
+        $field.val(key).trigger('input');
+        if (key) $('#tv_test_key').trigger('click');
+    } else {
+        voiceSettings().apiKey = key;
+        save();
+    }
+}
+
+async function saveKeys() {
+    const filled = $('#fm_keys input').toArray().filter(el => el.value.trim());
+    if (!filled.length) return toastr.info('Paste a key first.', 'Media Studio');
+    for (const el of filled) {
+        const { key: id, label } = el.dataset;
+        const key = el.value.trim();
+        if (id === 'xai') {
+            setVoiceKey(key);
+            el.value = '';
+            toastr.success('xAI key saved in TavernVoice.', 'Media Studio');
+            continue;
+        }
+        try {
+            const r = await bridge(`/media/keys/${id}`, { method: 'PUT', body: { key }, timeout: 40000 });
+            el.value = '';
+            if (r.error) toastr.warning(`${label}: saved, but the check failed: ${r.error}`, 'Media Studio');
+            else toastr.success(`${label}: saved${r.balance == null ? '.' : `, balance ${Math.round(r.balance * 100) / 100} ${r.unit}.`}`, 'Media Studio');
+        } catch (err) {
+            toastr.error(`${label}: ${err?.detail || err?.message || err}`, 'Media Studio');
+        }
+    }
+    await refreshBridgeStatus();
+}
+
+async function clearKey(id, label) {
+    const c = ctx();
+    if (await c.callGenericPopup(`Clear the ${label} key? Anything using it stops working${id === 'xai' ? '' : ' unless .env has one'}.`, c.POPUP_TYPE.CONFIRM) !== c.POPUP_RESULT.AFFIRMATIVE) return;
+    try {
+        if (id === 'xai') setVoiceKey('');
+        else await bridge(`/media/keys/${id}`, { method: 'DELETE' });
+    } catch (err) {
+        toastr.error(err?.detail || err?.message || String(err), 'Media Studio');
+    }
+    await refreshBridgeStatus();
 }
 
 async function refreshBalances() {
@@ -435,6 +530,8 @@ function bindSettings() {
     });
     $('#fm_bridge_url, #fm_bridge_token').on('change', () => refreshBridgeStatus({ quiet: false }));
     $('#fm_test').on('click', () => refreshBridgeStatus({ quiet: false }));
+    $('#fm_keys_save').on('click', saveKeys);
+    $('#fm_keys').on('click', '.fm-key-clear', function () { clearKey(this.dataset.key, this.dataset.label); });
     $('#fm_test_run').on('click', testRoute);
     $('#fm_test_pass').on('click', () => saveVerdict('allowed'));
     $('#fm_test_fail').on('click', () => saveVerdict('banned'));

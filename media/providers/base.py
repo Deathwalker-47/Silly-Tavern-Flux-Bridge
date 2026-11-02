@@ -77,6 +77,12 @@ class Provider:
         return None
 
 
+def check_key(resp: httpx.Response) -> None:
+    """A balance call is how a new key gets checked, so a refusal must not read as "no balance"."""
+    if resp.status_code in (401, 403):
+        raise RuntimeError(f"The provider refused this key (HTTP {resp.status_code})")
+
+
 def sniff_mime(data: bytes) -> str:
     if data[:3] == b"\xff\xd8\xff":
         return "image/jpeg"

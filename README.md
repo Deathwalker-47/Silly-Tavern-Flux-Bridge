@@ -79,6 +79,9 @@ API ENDPOINTS
 - GET  /images/{id}              serves generated images by id
 - GET  /media/capabilities       Media Studio menus: providers, models, modes, helper
 - GET  /media/balances           provider balances
+- GET  /media/keys               where each key comes from, last 4 at most
+- PUT  /media/keys/{provider}    save a key and check it (needs EDIT_API_TOKEN)
+- DELETE /media/keys/{provider}  remove a saved key, back to .env
 - POST /assets                   upload an image (window check, metadata stripped)
 - POST /media/lora-status        which characters have a LoRA
 - POST /media/jobs               start an image or video job (returns job_id)
@@ -275,8 +278,12 @@ and each round makes at most one media decision. A round ends when it's your
 turn, at 5 messages or the number of characters, when you press Stop, or when
 you start typing.
 
-Keys live in the bridge's .env, never in the extension. A missing key hides
-that provider:
+Add keys under API keys in the Media Studio settings, or in the bridge's .env.
+A key saved in settings replaces the one in .env. It's stored in
+`data/keys.json` on the bridge and never sent back, and saving needs
+EDIT_API_TOKEN set on the bridge. A provider with no key disappears from every
+picker. The xAI key for TavernVoice can go here too: it stays in SillyTavern,
+because TavernVoice calls xAI from the browser.
 
   Runware    RUNWARE_API_KEY      Flux Dev + LoRA, Juggernaut Z + LoRA
   NanoGPT    NANOGPT_API_KEY      Seedream 4.5, Qwen Edit, The Best Option, video,

@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import assets, catalog, db, director, insights, loras, telemetry
+from . import assets, catalog, db, director, insights, keys, loras, telemetry
 from .catalog import IMAGE_FAMILIES, PROVIDER_LABELS, Route, VIDEO_FAMILIES
 from .config import MediaConfig
 from .helper import helper
@@ -31,12 +31,13 @@ MODE_TEXT = {
 }
 
 _check_token: Optional[Callable[[Any], None]] = None
+_token_set: Callable[[], bool] = lambda: False
 
 
-def use_token_check(check: Callable[[Any], None]) -> None:
+def use_token_check(check: Callable[[Any], None], token_set: Callable[[], bool]) -> None:
     """The bridge's own check, so there's one copy of the token logic."""
-    global _check_token
-    _check_token = check
+    global _check_token, _token_set
+    _check_token, _token_set = check, token_set
 
 
 def public_catalog(kind: str) -> Dict[str, Any]:
@@ -77,23 +78,60 @@ async def capabilities(request: Request = None):
     }
 
 
+async def balance_of(name: str) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {"id": name, "label": PROVIDER_LABELS.get(name, name), "configured": True}
+    try:
+        entry.update(await asyncio.wait_for(PROVIDERS[name].balance(), timeout=20) or {"amount": None})
+    except Exception as e:
+        entry.update(amount=None, error=str(e)[:200])
+    return entry
+
+
 @router.get("/media/balances")
 async def balances(request: Request = None):
     _check_token(request)
-
-    async def one(name: str) -> Dict[str, Any]:
-        entry: Dict[str, Any] = {"id": name, "label": PROVIDER_LABELS.get(name, name), "configured": True}
-        try:
-            entry.update(await asyncio.wait_for(PROVIDERS[name].balance(), timeout=20) or {"amount": None})
-        except Exception as e:
-            entry.update(amount=None, error=str(e)[:200])
-        return entry
-
     names = [n for n in PROVIDERS if n != "mock" and provider_configured(n)]
-    results = await asyncio.gather(*(one(n) for n in names))
+    results = await asyncio.gather(*(balance_of(n) for n in names))
     for entry in results:
         telemetry.record("account", "balance", provider=entry["id"], amount=entry.get("amount"), unit=entry.get("unit"))
     return {"balances": results}
+
+
+def _key_writes(request: Any, provider: str) -> None:
+    """No loopback exception: behind a reverse proxy every request looks local."""
+    _check_token(request)
+    if not _token_set():
+        raise HTTPException(status_code=403, detail="Set EDIT_API_TOKEN on the bridge to change keys from settings.")
+    if provider not in keys.FIELDS:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+
+
+@router.get("/media/keys")
+async def list_keys(request: Request):
+    _check_token(request)
+    writable = _token_set()
+    return {"keys": keys.status(hints=writable), "writable": writable}
+
+
+@router.put("/media/keys/{provider}")
+async def save_key(provider: str, request: Request):
+    _key_writes(request, provider)
+    key = (await request.json() or {}).get("key")
+    if not isinstance(key, str) or not 8 <= len(key) <= 512 or any(c.isspace() for c in key):
+        raise HTTPException(status_code=400, detail="That doesn't look like an API key.")
+    keys.save(provider, key)
+    telemetry.record("account", "key_saved", provider=provider)
+    checked = await balance_of(provider)
+    return {"saved": True, "balance": checked.get("amount"), "unit": checked.get("unit"),
+            "error": (checked.get("error") or "").replace(key, "") or None}
+
+
+@router.delete("/media/keys/{provider}")
+async def clear_key(provider: str, request: Request):
+    _key_writes(request, provider)
+    keys.clear(provider)
+    telemetry.record("account", "key_cleared", provider=provider)
+    return {"cleared": True}
 
 
 @router.post("/assets")
