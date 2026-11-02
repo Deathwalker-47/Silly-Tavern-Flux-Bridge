@@ -70,7 +70,7 @@ export function messagesSinceMedia(type) {
         const m = chat[i];
         if (m.is_user || m.is_system) continue;
         if (messageMedia(m).some(x => x.type === type && x.source === 'generated')) return count;
-        count++;
+        if (m.extra?.type !== 'narrator') count++;      // a /sys line, like a call log, isn't a character message
     }
     return Infinity;
 }
