@@ -183,12 +183,15 @@ def finish_row(row_id: str, result: RenderResult, req: RenderRequest, *, message
                      usd=usd, credits=credits, seed=seed)
 
 
-def finish(job: Any, req: RenderRequest, result: RenderResult, plan: Plan, refs: Sequence[Ref] = (),
-           stack: Sequence[dict] = (), parent: Optional[str] = None) -> None:
+def note_inputs(row_id: str, refs: Sequence[Ref] = (), stack: Sequence[dict] = ()) -> None:
+    """Stored before the render, so a job that resumes after a restart keeps them."""
+    db.update_generation(row_id, refs_json=json.dumps([r.public() for r in refs]),
+                         loras_json=json.dumps([{"id": l.get("id"), "weight": l.get("weight")} for l in stack]))
+
+
+def finish(job: Any, req: RenderRequest, result: RenderResult, parent: Optional[str] = None) -> None:
     started = (db.generation(job.id) or {}).get("created_at") or time.time()
-    finish_row(job.id, result, req, message=f"Done in {time.time() - started:.0f}s", parent_id=parent,
-               refs_json=json.dumps([r.public() for r in refs]),
-               loras_json=json.dumps([{"id": l.get("id"), "weight": l.get("weight")} for l in stack]))
+    finish_row(job.id, result, req, message=f"Done in {time.time() - started:.0f}s", parent_id=parent)
 
 
 def child_row(job: Any, role: str) -> str:
@@ -241,8 +244,9 @@ async def run_image(job: Any) -> None:
         prompt, negative = loras.compose(prompt, stack, negative)
     req = RenderRequest(option=option, mode=mode, prompt=prompt, negative_prompt=negative, refs=to_assets(refs) + extra_assets,
                         loras=stack, aspect_ratio=choose_aspect(job, option, plan), seed=new_seed(), network=job.network)
+    note_inputs(job.id, refs, stack)
     result = await render(job, req)
-    finish(job, req, result, plan, refs, stack)
+    finish(job, req, result)
 
 
 def face_edit_prompt(faces: Sequence[Ref], option: Any) -> str:
@@ -271,8 +275,9 @@ async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> 
     faces = pick_references(people, ["face_1", "face_2"], finish_model.max_refs - 1)
     final = RenderRequest(option=finish_model, mode="reference", prompt=face_edit_prompt(faces, finish_model),
                           refs=[base, *to_assets(faces)], aspect_ratio=aspect, seed=new_seed(), network=job.network)
+    note_inputs(job.id, [*refs, *faces])
     result = await render(job, final)
-    finish(job, final, result, plan, [*refs, *faces], parent=row)
+    finish(job, final, result, parent=row)
 
 
 # ---- video ----
@@ -306,9 +311,9 @@ async def make_keyframe(job: Any, plan: Plan, people: Sequence[Any], prompt: str
     req = RenderRequest(option=option, mode=option.modes[0], prompt=text, negative_prompt=negative,
                         refs=[*extra, *to_assets(refs)], loras=stack, aspect_ratio=aspect, seed=new_seed(), network=job.network)
     row = child_row(job, role)
+    note_inputs(row, refs, stack)
     result = await render(job, req, row)
-    finish_row(row, result, req, refs_json=json.dumps([r.public() for r in refs]),
-               loras_json=json.dumps([{"id": l.get("id"), "weight": l.get("weight")} for l in stack]))
+    finish_row(row, result, req)
     asset, _existing = assets.store(result.data, "frame")
     job.keyframe_id = job.keyframe_id or row
     db.update_generation(job.id, parent_id=job.keyframe_id)
@@ -340,5 +345,6 @@ async def run_video(job: Any) -> None:
             last = job.last_image or await make_keyframe(job, plan, people, plan.last_frame_prompt or motion, extra=[first],
                                                          shape=aspect, role="last_frame")
         req = RenderRequest(prompt=render_tokens(motion, option, []), first=first, last=last, **common)
+    note_inputs(job.id, refs)
     result = await render(job, req)
-    finish(job, req, result, plan, refs, parent=job.keyframe_id)
+    finish(job, req, result, parent=job.keyframe_id)

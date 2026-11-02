@@ -32,6 +32,13 @@ class NanoGPT(Provider):
     def configured(self) -> bool:
         return bool(MediaConfig.NANOGPT_API_KEY)
 
+    def _finished(self, task_id: str) -> RenderResult:
+        """Images come back from submit, so a missing one was lost to a restart."""
+        result = self._done.pop(task_id, None)
+        if not result:
+            raise RuntimeError("Interrupted by a bridge restart")
+        return result
+
     def _headers(self) -> Dict[str, str]:
         return {"x-api-key": MediaConfig.NANOGPT_API_KEY, "Content-Type": "application/json"}
 
@@ -128,7 +135,7 @@ class NanoGPT(Provider):
 
     async def poll(self, task_id: str, req: RenderRequest) -> Optional[RenderResult]:
         if req.option.kind == "image":
-            return self._done.pop(task_id, None)
+            return self._finished(task_id)
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await send(client, "GET", f"{MediaConfig.NANOGPT_BASE}/video/status", params={"requestId": task_id},
                               headers=self._headers())

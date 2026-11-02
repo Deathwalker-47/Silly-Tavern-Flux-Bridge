@@ -172,7 +172,8 @@ def suggestions(routes: List[Dict[str, Any]], steps: List[Dict[str, Any]], direc
 
 def report(days: int = 30) -> Dict[str, Any]:
     since = time.time() - days * 86400
-    rows = [r for r in db.generations_since(int(since)) if r.get("chat_id") or r.get("message_key") or r["status"] != "done"]
+    everything = db.generations_since(int(since))
+    rows = [r for r in everything if r.get("chat_id") or r.get("message_key") or r["status"] != "done"]   # no keyframes or steps
     events = db.events_since(since)
     done = [r for r in rows if r["status"] == "done"]
     people = db.people_for(r["id"] for r in done)
@@ -200,7 +201,8 @@ def report(days: int = 30) -> Dict[str, Any]:
     return {
         "days": days,
         "totals": {"generations": len(rows), "done": len(done), "failed": sum(1 for r in rows if r["status"] == "failed"),
-                   "usd": round(sum(r.get("cost_usd") or 0 for r in rows), 4), "credits": round(sum(r.get("cost_credits") or 0 for r in rows), 2),
+                   "usd": round(sum(r.get("cost_usd") or 0 for r in everything), 4),
+                   "credits": round(sum(r.get("cost_credits") or 0 for r in everything), 2),
                    "rated": sum(1 for r in done if r.get("rating")), "rating": _mean(r.get("rating") for r in done)},
         "routes": routes, "steps": steps, "director": director, "voice": voice,
         "groups": group_section(events), "client": client_section(events), "tables": tables,

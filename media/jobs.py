@@ -130,10 +130,10 @@ class JobRunner:
                 telemetry.record("job", "duplicate_blocked", generation_id=running["id"], message_key=key)
                 return running
         job_id = uuid.uuid4().hex
+        job = Job(job_id, body, option, self)      # first: a missing reference must not leave a row behind
         db.insert_generation(id=job_id, kind=kind, status="queued", message="Queued", chat_id=body.get("chat_id"),
                              message_id=body.get("message_id"), message_key=key, group_id=body.get("group_id"),
                              folder=body.get("folder"), provider=option.provider, model_id=option.id, family=option.family, mode=mode)
-        job = Job(job_id, body, option, self)
         self._spawn(job.id, self._run(job))
         return db.generation(job_id)
 
@@ -178,6 +178,7 @@ class JobRunner:
         except asyncio.CancelledError:
             # A user cancel already wrote its row. On shutdown the row stays open, so recovery finds it.
             if job.id in self.cancelled:
+                self.cancelled.discard(job.id)
                 self._end_children(job.id, "cancelled")
             raise
         except pipelines.Blocked as e:
@@ -212,8 +213,10 @@ class JobRunner:
 
     async def startup(self) -> None:
         db.connect()
-        for row in db.open_generations():
-            self._recover(row)
+        rows = db.open_generations()
+        open_ids = {row["id"] for row in rows}
+        for row in rows:
+            self._recover(row, row.get("parent_id") in open_ids)
         self.sweep()
         self._sweeper = asyncio.get_running_loop().create_task(self._sweep_loop())
 
@@ -225,18 +228,20 @@ class JobRunner:
             task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
 
-    def _recover(self, row: Dict[str, Any]) -> None:
+    def _recover(self, row: Dict[str, Any], is_step: bool = False) -> None:
+        """Carries on a render that can be collected. A keyframe under an unfinished job can't
+        help: its parent's pipeline died with the process, so it ends with the parent."""
         provider = PROVIDERS.get(row.get("provider") or "")
         option = catalog.by_id(row["kind"], row["provider"], row["model_id"]) if provider else None
         task_id = row.get("provider_task_id")
-        resumable = row["status"] == "rendering" and task_id and provider and provider.resumable and option
+        resumable = not is_step and row["status"] == "rendering" and task_id and provider and provider.resumable and option
         if resumable:
             telemetry.record("job", "resumed", generation_id=row["id"], provider=row["provider"], task=task_id)
             logger.info(f"🎬 [Job {row['id'][:8]}] resuming {row['provider']} task {task_id}")
             self._spawn(row["id"], self._resume(row, provider, option))
             return
         self._fail(row["id"], "Interrupted by a bridge restart", "interrupted")
-        if task_id and provider and not provider.resumable:
+        if task_id and provider and (is_step or not provider.resumable):
             asyncio.get_running_loop().create_task(self._stop_remote(provider, task_id))
 
     async def _resume(self, row: Dict[str, Any], provider: Any, option: Any) -> None:

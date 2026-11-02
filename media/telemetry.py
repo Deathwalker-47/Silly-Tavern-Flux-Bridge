@@ -36,7 +36,7 @@ current_generation: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 current_chat: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("media_chat", default=None)
 
 _DATA_URI = re.compile(r"^data:[\w/+.-]+;base64,", re.I)
-_SECRET_NAME = re.compile(r"(api[_-]?key|token|authorization|secret|password)", re.I)
+_SECRET_NAME = re.compile(r"(api[_-]?key|authorization|secret|password|(^|[_-])token$)", re.I)
 _BASE64ISH = re.compile(r"^[A-Za-z0-9+/=_-]{512,}$")
 
 
