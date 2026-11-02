@@ -253,9 +253,10 @@ function onMessageReceived(messageId, type) {
     autoMedia(messageId, s.autoMedia);
 }
 
+/** /sys lines, such as TavernVoice's call log, are narrator messages rather than system ones, and no character wrote them. */
 function lastCharacterMessageId() {
     const chat = ctx().chat;
-    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user && !chat[i].is_system) return i;
+    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user && !chat[i].is_system && chat[i].extra?.type !== 'narrator') return i;
     return -1;
 }
 
