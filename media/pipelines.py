@@ -94,6 +94,18 @@ def choose_aspect(job: Any, option: Any, plan: Plan) -> str:
     return aspect
 
 
+def follow_opening_frame(option: Any, frame: Optional[assets.Asset], aspect: str) -> str:
+    """An opening image that already exists sets the clip's shape. It goes to the model as it is, so the
+    shape is read from it and never forced onto it."""
+    size = assets.dimensions(frame.id) if frame else None
+    if not size:
+        return aspect
+    shape = catalog.pick_aspect(option, assets.closest_shape(*size, options=ALL_SHAPES))
+    if shape != aspect:
+        telemetry.record("pipeline", "aspect_from_frame", director=aspect, used=shape, frame=f"{size[0]}x{size[1]}")
+    return shape
+
+
 def to_assets(refs: Sequence[Ref]) -> List[assets.Asset]:
     return [assets.load(r.asset) for r in refs]
 
@@ -327,6 +339,8 @@ async def run_video(job: Any) -> None:
     option = job.option
     plan, people = await plan_shot(job, option, job.mode)
     aspect = choose_aspect(job, option, plan)
+    if job.mode != "reference":
+        aspect = follow_opening_frame(option, job.message_image, aspect)
     seconds = job.seconds_for(option)
     common = dict(option=option, mode=job.mode, negative_prompt=plan.negative_prompt, aspect_ratio=aspect, seconds=seconds,
                   resolution=option.lowest, seed=new_seed(), audio=job.audio_for(option), adult=plan.adult, network=job.network)
@@ -342,7 +356,7 @@ async def run_video(job: Any) -> None:
             prompt = f"{option.ref_token.format(n=1)} sets the people and the place. {prompt}"
         req = RenderRequest(prompt=prompt, refs=images, **common)
     else:
-        first = job.message_image or await make_keyframe(job, plan, people, plan.prompt)
+        first = job.message_image or await make_keyframe(job, plan, people, plan.prompt, shape=aspect)
         last = None
         if job.mode == "first_last":
             last = job.last_image or await make_keyframe(job, plan, people, plan.last_frame_prompt or motion, extra=[first],

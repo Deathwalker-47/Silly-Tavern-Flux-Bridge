@@ -139,6 +139,32 @@ def store(data: bytes, purpose: str = "reference") -> Tuple["Asset", bool]:
     return Asset(key, path, "image/jpeg", len(cleaned)), False
 
 
+SHAPES = ("9:16", "3:4", "1:1", "4:3", "16:9")
+
+
+def dimensions(key: str) -> Optional[Tuple[int, int]]:
+    """Width and height of a stored image, read from its header. None when it isn't on the bridge."""
+    row = db.asset(key)
+    if not row or not Path(row["path"]).exists():
+        return None
+    try:
+        with Image.open(row["path"]) as image:
+            return image.size
+    except Exception:
+        return None
+
+
+def closest_shape(width: int, height: int, options: Sequence[str] = SHAPES) -> str:
+    """The named shape nearest to these dimensions. Names only: no image is ever cropped or padded to match it."""
+    target = width / max(1, height)
+    return min(options, key=lambda o: abs(int(o.split(":")[0]) / int(o.split(":")[1]) - target))
+
+
+def shape_text(key: str) -> Optional[str]:
+    size = dimensions(key)
+    return f"{size[0]}x{size[1]}, closest {closest_shape(*size)}" if size else None
+
+
 def exists(key: str) -> bool:
     row = db.asset(key)
     return bool(row and Path(row["path"]).exists())

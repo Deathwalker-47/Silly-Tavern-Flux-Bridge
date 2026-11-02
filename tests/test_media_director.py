@@ -3,8 +3,12 @@ import json
 import unittest
 import unittest.mock
 
-from media_support import MediaCase, run
-from media import catalog, director, references, telemetry
+from io import BytesIO
+
+from PIL import Image
+
+from media_support import MediaCase, noisy_jpeg, run
+from media import assets, catalog, director, pipelines, references, telemetry
 from media.director import DirectorInput, Plan
 from media.references import Person, Ref, pick_references, render_tokens
 
@@ -64,6 +68,49 @@ class GuardTests(unittest.TestCase):
     def test_adult_scenes_pass_untouched(self):
         for text in ("she undresses by the bed", "a 25 years old woman", "twenty-four and laughing", "kidding around at the bar"):
             self.assertIsNone(director.minor_block(Plan(prompt=text, adult=True), [self.adult()]), text)
+
+
+class ShapeTests(MediaCase):
+    """The director picks the shape from the scene and the references, and no reference is ever reframed."""
+
+    def test_the_director_is_told_each_references_real_shape(self):
+        tall = assets.store(noisy_jpeg(864, 1536))[0].id
+        square = assets.store(noisy_jpeg(1000, 1000))[0].id
+        person = {**MAYA, "refs": {"face_1": tall, "full_body": square, "portrait": "not-on-the-bridge"}}
+        public = DirectorInput({"characters": [person]}).public(catalog.find("image", "nanogpt", "seedream-4.5"))
+        self.assertEqual(public["characters"][0]["reference_shapes"],
+                         {"face_1": "864x1536, closest 9:16", "full_body": "1000x1000, closest 1:1"})
+        self.assertIn("never cropped, padded or stretched", director.DIRECTOR_RULES)
+        self.assertIn("let the scene decide", director.DIRECTOR_RULES)
+        self.assertIn("only to break a tie", director.DIRECTOR_RULES)
+
+    def test_the_scene_decides_the_shape_whatever_the_references_look_like(self):
+        from types import SimpleNamespace
+        job = SimpleNamespace(device="portrait", aspect_setting="")
+        for kind, provider, family in (("image", "nanogpt", "seedream-4.5"), ("video", "sogni", "minimax-h3")):
+            option = catalog.find(kind, provider, family)
+            wide = Plan(prompt="x", aspect_ratio="16:9")
+            tall = Plan(prompt="x", aspect_ratio="9:16")
+            self.assertEqual(pipelines.choose_aspect(job, option, wide), "16:9", kind)
+            self.assertEqual(pipelines.choose_aspect(job, option, tall), "9:16", kind)
+        fixed = SimpleNamespace(device="portrait", aspect_setting="3:4")      # your own setting still wins over the scene
+        self.assertEqual(pipelines.choose_aspect(fixed, catalog.find("image", "nanogpt", "seedream-4.5"), Plan(prompt="x", aspect_ratio="16:9")), "3:4")
+
+    def test_stored_and_fitted_references_keep_their_shape(self):
+        for width, height in ((700, 1300), (1300, 700), (1000, 1000), (900, 1200)):
+            stored = assets.store(noisy_jpeg(width, height))[0]
+            self.assertEqual(assets.dimensions(stored.id), (width, height))
+            for sent in assets.fit_refs([stored], 4_400_000):
+                w, h = Image.open(BytesIO(sent)).size
+                self.assertAlmostEqual(w / h, width / height, delta=0.005)
+
+    def test_an_existing_opening_image_sets_the_clips_shape(self):
+        option = catalog.find("video", "sogni", "minimax-h3")
+        wide = assets.store(noisy_jpeg(1600, 900), "frame")[0]
+        tall = assets.store(noisy_jpeg(900, 1600), "frame")[0]
+        self.assertEqual(pipelines.follow_opening_frame(option, wide, "9:16"), "16:9")
+        self.assertEqual(pipelines.follow_opening_frame(option, tall, "16:9"), "9:16")
+        self.assertEqual(pipelines.follow_opening_frame(option, None, "16:9"), "16:9")
 
 
 class InputTests(unittest.TestCase):
