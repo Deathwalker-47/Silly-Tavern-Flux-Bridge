@@ -119,6 +119,7 @@ Rules:
 - "sound": a few words on how their voice sounds (age, tone, pace, accent), or empty.
 - "gender": female, male or other.
 - "voice": the id of the voice below that best fits their gender, age and personality. Give each person a different voice when the list allows it.
+- If the card says a person speaks a particular language (Malayalam, Hindi, ...), pick a voice listed for that language. Ids starting with elevenlabs: or heygen: come from those providers; the others are xAI voices.
 Voices (id: description):
 {voices}
 Reply with one JSON object only: {{"people": [{{"name": "", "gender": "", "about": "", "sound": "", "voice": ""}}]}}"""
@@ -221,7 +222,7 @@ class HelperLLM:
         """The people on a card who can answer a call, each with a short brief and a voice (TavernVoice)."""
         user = user or "the user"
         voices = [v for v in voices or [] if v.get("voice_id")]
-        listed = "\n".join(f"- {v['voice_id']}: {', '.join(str(v[k]) for k in ('name', 'gender', 'description') if v.get(k))}"
+        listed = "\n".join(f"- {v['voice_id']}: {', '.join(str(v[k]) for k in ('name', 'gender', 'language', 'description') if v.get(k))}"
                            for v in voices) or "- (none, leave voice empty)"
         parts = [f"Card name: {card.get('name') or ''}"]
         parts += [f"{key}:\n{str(card[key])[:12000]}" for key in CAST_FIELDS if str(card.get(key) or "").strip()]

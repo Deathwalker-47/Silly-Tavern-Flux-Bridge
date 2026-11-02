@@ -164,6 +164,19 @@ class HelperTests(unittest.TestCase):
         self.assertIn("lore:\nBram is gruff.", user_msg)
         self.assertNotIn("scenario:", user_msg, "empty fields are left out")
 
+    def test_cast_sees_each_voice_language_so_a_malayalam_speaker_gets_a_malayalam_voice(self):
+        reply = json.dumps({"people": [{"name": "Meera", "gender": "female", "about": "Talks in Malayalam.", "voice": "heygen:m1"}]})
+        helper = self.with_reply(reply)
+        voices = [{"voice_id": "ara", "name": "Ara", "gender": "female"},
+                  {"voice_id": "heygen:m1", "name": "Meera", "gender": "female", "language": "Malayalam", "description": "Malayalam"},
+                  {"voice_id": "elevenlabs:a", "name": "Asha", "gender": "female", "language": "Malayalam, English", "description": "warm"}]
+        out = run(helper.cast({"name": "Kochi", "description": "Meera only speaks Malayalam."}, user="Sam", voices=voices))
+        self.assertEqual(out["people"][0]["voice"], "heygen:m1")
+        system = self.last_messages[0]["content"]
+        self.assertIn("- heygen:m1: Meera, female, Malayalam, Malayalam", system)
+        self.assertIn("- elevenlabs:a: Asha, female, Malayalam, English, warm", system)
+        self.assertIn("pick a voice listed for that language", system)
+
     def test_voice_tags_level_none_skips_the_llm(self):
         out = run(self.with_reply("SHOULD NOT BE USED").voice_tags("Hi.", tag_level="none"))
         self.assertEqual(out["text"], "Hi.")
