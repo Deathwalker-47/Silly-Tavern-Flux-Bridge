@@ -128,14 +128,18 @@ class InputTests(unittest.TestCase):
         self.assertEqual(public["characters"][1]["side_of"], "Seaside Inn")
         self.assertEqual(public["characters"][1]["slots"], ["face_1"])
         self.assertIn('"side_of"', director.DIRECTOR_RULES)
+        self.assertIn('Name is the person\'s "name" exactly as given', director.DIRECTOR_RULES)
 
     def test_a_side_characters_shots_also_land_in_the_story_cards_gallery(self):
         people = [Person.from_context({"key": "char:inn.png#side:b1", "name": "Bram", "side_of": "Seaside Inn"}, "character"),
                   Person.from_context({"key": "char:inn.png#side:n2", "name": "Nadia", "side_of": "Seaside Inn"}, "character"),
                   Person.from_context(MAYA, "character")]
         self.assertEqual(pipelines.gallery_people(people), [
-            {"key": "char:inn.png#side:b1", "role": "character"}, {"key": "char:inn.png", "role": "story"},
-            {"key": "char:inn.png#side:n2", "role": "character"}, {"key": "c:maya", "role": "character"}])
+            {"key": "char:inn.png#side:b1", "role": "character"}, {"key": "char:inn.png#side:n2", "role": "character"},
+            {"key": "c:maya", "role": "character"}, {"key": "char:inn.png", "role": "story"}])
+        inn = Person.from_context({"key": "char:inn.png", "name": "Seaside Inn"}, "character")
+        self.assertEqual([r["key"] for r in pipelines.gallery_people([people[0], inn])], ["char:inn.png#side:b1", "char:inn.png"],
+                         "the card in the shot itself is listed once")
 
     def test_context_is_passed_through_whole_with_no_cuts(self):
         long_reply = "word " * 5000

@@ -63,9 +63,8 @@ def people_in_plan(plan: Plan, ctx: director.DirectorInput, option: Any) -> List
 
 def gallery_people(people: Sequence[Any]) -> List[Dict[str, str]]:
     """Each person's gallery, and a side character's shots in their story card's gallery too."""
-    rows: List[Dict[str, str]] = []
+    rows = [{"key": p.key, "role": p.role} for p in people]
     for p in people:
-        rows.append({"key": p.key, "role": p.role})
         card = p.key.split("#side:", 1)[0] if p.side_of and "#side:" in p.key else ""
         if card and all(r["key"] != card for r in rows):
             rows.append({"key": card, "role": "story"})
