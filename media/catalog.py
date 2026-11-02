@@ -171,7 +171,7 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
         "seedream-4.5": [_i("nanogpt", "seedream-4.5", "seedream-v4.5", "Seedream 4.5", REF, tested=True, max_refs=10, ref_field="input_references",
                             aspects=ALL_SHAPES, lowest="2304x4096", usd=0.04, hint="$0.04, 10 refs", sizes=SEEDREAM_45_SIZES)],
         "seedream-5-pro": [_i("nanogpt", "seedream-5-pro", "bytedance/seedream-v5.0-pro/edit", "Seedream 5 Pro", REF, tested=True, max_refs=10,
-                              ref_field="input_references", aspects=ALL_SHAPES, lowest="1k", usd=0.09, hint="$0.09, 10 refs",
+                              ref_field="input_references", aspects=ALL_SHAPES, lowest="1k", usd=0.09, hint="$0.09, or $0.045 when the references already have the shape. 10 refs",
                               hidden=True, resolution="1k", send_aspect=True, needs_ref=True)],
         "best": [_i("nanogpt", "best", "best", "The Best Option", REF, tested=True, max_refs=10, aspects=ALL_SHAPES, lowest="1k",
                     usd=0.13, hint="$0.13: Seedream 5 Pro scene ($0.09), then Seedream 4.5 face pass ($0.04)")],

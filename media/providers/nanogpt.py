@@ -44,6 +44,22 @@ class NanoGPT(Provider):
 
     # ---- images ----
 
+    @staticmethod
+    def _refs_have_shape(refs: List[bytes], aspect: str, tolerance: float = 0.03) -> bool:
+        """Seedream 5 Pro bills a named aspect ratio at the 2k price ($0.09, about 4 MP) and plain `1k`
+        at half ($0.045, about 1 MP), where the picture takes its shape from the references. With
+        mixed-shape references it picked 9:16 whichever came first, so the ratio is only left off
+        when every reference already has the shape that was asked for."""
+        if not refs:
+            return False
+        width, height = (float(n) for n in aspect.split(":"))
+        wanted = width / height
+        for data in refs:
+            w, h = image_size(data)
+            if abs(w / max(1, h) / wanted - 1) > tolerance:
+                return False
+        return True
+
     def build_image(self, req: RenderRequest, refs: List[bytes]) -> Dict[str, Any]:
         extra = req.option.extra
         body: Dict[str, Any] = {"model": req.option.id, "prompt": req.prompt, "n": 1}
@@ -53,7 +69,7 @@ class NanoGPT(Provider):
             body["resolution"] = f"{width}x{height}"
         else:
             body["resolution"] = extra["resolution"]
-        if extra.get("send_aspect"):
+        if extra.get("send_aspect") and not self._refs_have_shape(refs, req.aspect_ratio):
             body["aspect_ratio"] = req.aspect_ratio
         if refs:
             body["input_references"] = [to_data_uri(r) for r in refs]
