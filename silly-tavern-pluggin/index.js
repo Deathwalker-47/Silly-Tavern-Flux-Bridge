@@ -294,9 +294,10 @@ async function refreshBridgeStatus({ quiet = true } = {}) {
     const $s = $('#fm_status');
     try {
         const caps = await getCapabilities(true);
-        const ready = caps.video.providers.filter(p => p.configured).map(p => p.label.split(' (')[0]);
-        $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · ${ready.join(', ') || 'no providers'} · director: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
+        const ready = [...caps.image.providers, ...caps.video.providers].filter(p => p.configured).map(p => p.label.split(' (')[0]);
+        $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · ${[...new Set(ready)].join(', ') || 'no providers'} · director: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
         renderPickers();
+        renderFailedRoutes();
         refreshBalances();
         if (!quiet) toastr.success('Bridge connected.', 'Media Studio');
     } catch (err) {
@@ -344,12 +345,21 @@ async function testRoute() {
     }
 }
 
-async function saveVerdict(status) {
-    const { provider, model } = $('#fm_test_verdict').data('route');
+async function setRoute({ provider, model }, status, done) {
     await bridge(`/media/routes/${provider}/${model}`, { method: 'PUT', body: { status } });
-    $('#fm_test_verdict').addClass('displayNone');
-    toastr.success(status === 'allowed' ? 'Route passed.' : 'Route failed and hidden from the picker.', 'Media Studio');
+    toastr.success(done, 'Media Studio');
     refreshBridgeStatus();
+}
+
+async function saveVerdict(status) {
+    const route = $('#fm_test_verdict').addClass('displayNone').data('route');
+    await setRoute(route, status, status === 'allowed' ? 'Route passed.' : 'Route failed and hidden from the picker.');
+}
+
+function renderFailedRoutes() {
+    const failed = cachedCapabilities()?.failed_routes ?? [];
+    $('#fm_failed_routes').html(failed.length ? `Hidden routes:${failed.map(r => `<div class="fm-failed-route"><span>${esc(r.label)}</span>
+        <span class="fm-restore menu_button" data-provider="${esc(r.provider)}" data-model="${esc(r.model)}">Restore</span></div>`).join('')}` : '');
 }
 
 const money = (r) => [r.total_usd ? `$${r.total_usd.toFixed(2)}` : '', r.total_credits ? `${r.total_credits} cr` : ''].filter(Boolean).join(' + ') || '-';
@@ -364,7 +374,8 @@ async function openReport() {
     }
     const routes = r.routes.map(x => `<tr><td>${esc(x.model)}<br><small>${esc(x.provider)} · ${esc(x.mode || '')}</small></td><td>${x.done}/${x.runs}</td><td>${x.median_seconds ?? '-'}s</td><td>${money(x)}</td><td>${x.rating ?? '-'}</td></tr>`).join('');
     const notes = r.suggestions.map(n => `<li>${esc(n)}</li>`).join('') || '<li>Not enough runs yet. Rate your generations and this fills in.</li>';
-    const tables = Object.entries(r.tables).map(([name, rows]) => rows.length ? `<h4>By ${esc(name)}</h4><table class="fm-report"><tr><th></th><th>Runs</th><th>Rated</th><th>Rating</th></tr>${rows.slice(0, 8).map(x => `<tr><td>${esc(x.value)}</td><td>${x.runs}</td><td>${x.rated}</td><td>${x.rating ?? '-'}</td></tr>`).join('')}</table>` : '').join('');
+    const shortName = (v) => String(v).replace(/^(char|persona):/, '').replace(/\.png$/, '');
+    const tables = Object.entries(r.tables).map(([name, rows]) => rows.length ? `<h4>By ${esc(name)}</h4><table class="fm-report"><tr><th></th><th>Runs</th><th>Rated</th><th>Rating</th></tr>${rows.slice(0, 8).map(x => `<tr><td>${esc(shortName(x.value))}</td><td>${x.runs}</td><td>${x.rated}</td><td>${x.rating ?? '-'}</td></tr>`).join('')}</table>` : '').join('');
     const slow = r.steps.filter(x => x.median_ms).sort((a, b) => b.median_ms - a.median_ms).slice(0, 8)
         .map(x => `<tr><td>${esc(x.stage)}/${esc(x.event)}</td><td>${x.count}</td><td>${(x.median_ms / 1000).toFixed(1)}s</td><td>${x.failure_rate == null ? '-' : `${Math.round(x.failure_rate * 100)}%`}</td></tr>`).join('');
     const $root = $(`<div class="fm-popup">
@@ -419,6 +430,7 @@ function bindSettings() {
     $('#fm_test_run').on('click', testRoute);
     $('#fm_test_pass').on('click', () => saveVerdict('allowed'));
     $('#fm_test_fail').on('click', () => saveVerdict('banned'));
+    $('#fm_failed_routes').on('click', '.fm-restore', function () { setRoute(this.dataset, 'allowed', 'Route restored.'); });
     $('#fm_report').on('click', openReport);
     $('#fm_usage').text(`Today: ${usage().images} images, ${usage().videos} videos`);
 }

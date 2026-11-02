@@ -33,16 +33,14 @@ async function saveGroup(group) {
 export async function setGroupProfile(id, patch) {
     const c = ctx();
     const store = (c.extensionSettings[KEY].groups ??= {});
+    const previous = groupProfile(id).setting_avatar;
     const next = { ...groupProfile(id), ...patch };
     store[id] = next;
     c.saveSettingsDebounced();
     const group = c.groups.find(g => g.id === id);
     if (!group) return next;
     const muted = new Set(group.disabled_members || []);
-    if (patch.setting_avatar !== undefined) {
-        const previous = groupProfile(id).setting_avatar;
-        if (previous && previous !== next.setting_avatar) muted.delete(previous);
-    }
+    if (previous && previous !== next.setting_avatar) muted.delete(previous);
     if (next.setting_avatar) muted.add(next.setting_avatar);
     group.disabled_members = [...muted];
     if (next.loop) group.activation_strategy = MANUAL;
@@ -112,21 +110,29 @@ export async function runGroupTurn() {
     const limit = Math.max(5, presentMembers(profile).length);
     const spoken = [];
     let stoppedBy = 'limit';
+    const halted = () => {
+        const reason = turn.stop ? 'stop_button' : userIsTyping() ? 'typing' : '';
+        if (reason) stoppedBy = reason;
+        return !!reason;
+    };
     try {
-        while (spoken.length < limit) {
-            if (turn.stop) { stoppedBy = 'stop_button'; break; }
-            if (userIsTyping()) { stoppedBy = 'typing'; break; }
+        while (spoken.length < limit && !halted()) {
             const next = await bridge('/director/next-speaker', { method: 'POST', body: turnContext(profile, spoken), timeout: 60000 });
             if (next.speaker === 'user') { stoppedBy = 'user_turn'; break; }
+            if (halted()) break;                 // you may have started typing while the director thought
             setTurnPrompt(next, profile);
             await ctx().executeSlashCommandsWithOptions(`/trigger await=true ${quote(next.speaker)}`);
             clearTurnPrompt();
             spoken.push(next.speaker);
         }
     } catch (err) {
-        stoppedBy = 'error';
-        console.error('[MediaStudio]', err);
-        toastr.warning(`The director couldn't pick a speaker: ${err?.message || err}`, 'Media Studio');
+        if (turn.stop || err?.name === 'AbortError') {   // Stop aborts /trigger, which throws
+            stoppedBy = 'stop_button';
+        } else {
+            stoppedBy = 'error';
+            console.error('[MediaStudio]', err);
+            toastr.warning(`The director couldn't pick a speaker: ${err?.message || err}`, 'Media Studio');
+        }
     } finally {
         clearTurnPrompt();
         turn.running = false;

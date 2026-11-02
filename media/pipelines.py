@@ -72,6 +72,8 @@ async def plan_shot(job: Any, option: Any, mode: str) -> Tuple[Plan, List[Any]]:
     if job.direct:
         plan = job.direct_plan()
         guard(plan, [])
+        if job.body.get("person_key"):                 # a panel image still belongs in that gallery
+            db.add_people(job.id, [{"key": job.body["person_key"], "role": "main"}])
         return plan, []
     job.report("planning", "The director is planning the shot")
     plan = await director.make_plan(job.ctx, option, mode)

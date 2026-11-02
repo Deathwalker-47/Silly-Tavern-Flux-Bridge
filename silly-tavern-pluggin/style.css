@@ -132,16 +132,14 @@
     opacity: 0.8;
 }
 
-.fm-slot-actions,
-.fm-item-actions {
+.fm-slot-actions {
     display: flex;
     gap: 4px;
     flex-wrap: wrap;
     justify-content: center;
 }
 
-.fm-slot-actions .menu_button,
-.fm-item-actions .menu_button {
+.fm-slot-actions .menu_button {
     padding: 4px 6px;
     margin: 0;
     font-size: 0.85em;
@@ -155,17 +153,6 @@
     50% { opacity: 0.4; }
 }
 
-.fm-gen-label textarea {
-    width: 100%;
-}
-
-.fm-char-options {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: end;
-}
-
 .fm-lora-status {
     font-size: 0.9em;
     opacity: 0.9;
@@ -176,44 +163,6 @@
     justify-content: space-between;
     align-items: center;
     gap: 8px;
-}
-
-.fm-pick-banner {
-    color: #4c9cff;
-    font-weight: 600;
-}
-
-.fm-gallery {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 10px;
-    max-height: 60vh;
-    overflow-y: auto;
-}
-
-.fm-item {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    cursor: pointer;
-}
-
-.fm-item img,
-.fm-item video {
-    width: 100%;
-    aspect-ratio: 3 / 4;
-    object-fit: cover;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.2);
-}
-
-.fm-item-badge {
-    position: absolute;
-    top: 6px;
-    left: 8px;
-    color: #fff;
-    text-shadow: 0 0 4px #000;
 }
 
 .fm-status {
@@ -378,3 +327,8 @@
         align-items: flex-start;
     }
 }
+
+.fm-failed-route { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+
+/* SillyTavern ships only Font Awesome's solid weight, so fa-regular draws solid too. */
+.fm-star.fa-regular { opacity: 0.25; }

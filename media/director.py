@@ -205,8 +205,9 @@ def minor_block(plan: Plan, people: Sequence[Person]) -> Optional[str]:
     """Reason to refuse, or None. Naked references are always in play, so any hit stops the job."""
     if plan.blocked:
         return plan.block_reason or "The director flagged a minor"
-    if any(p.age is None or p.age < 18 for p in people):
-        return "Every person needs an age of 18 or over"
+    missing = [p.name for p in people if p.age is None or p.age < 18]
+    if missing:
+        return f"{', '.join(missing)} needs an age of 18 or over. Add it in the Media panel's Appearance tab."
     text = " ".join([plan.prompt, plan.motion_prompt, plan.last_frame_prompt])
     if MINOR_WORDS.search(text):
         return "The prompt mentions a minor"

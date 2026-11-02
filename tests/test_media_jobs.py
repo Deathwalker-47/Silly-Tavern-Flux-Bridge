@@ -130,6 +130,18 @@ class ImageJobTests(JobCase):
         self.assertEqual((step["status"], step["family"]), ("done", "seedream-5-pro"))
         self.assertIn("finished scene", row["prompt"])
 
+    def test_the_gallery_counts_what_the_earlier_steps_cost(self):
+        self.replies = [plan()]
+        row = self.finished({"kind": "image", "selection": {"provider": "mock", "family": "best"}, "message_key": "m1", **self.context()})
+        db.update_generation(row["parent_id"], cost_usd=0.045, cost_credits=1.25)
+        listed = db.list_generations("c:maya")[0]
+        self.assertEqual((listed["steps_usd"], listed["steps_credits"]), (0.045, 1.25))
+
+    def test_a_panel_image_lands_in_that_persons_gallery(self):
+        row = self.finished({"kind": "image", "selection": IMAGE, "prompt": "a red chair", "person_key": "c:maya"})
+        self.assertEqual(row["status"], "done", row["error"])
+        self.assertEqual(db.list_generations("c:maya")[0]["id"], row["id"])
+
 
 class LoraSwitchTests(JobCase):
     FLUX = {"provider": "mock", "family": "flux-lora"}

@@ -18,9 +18,9 @@ function limitsText() {
 }
 
 function costText(g) {
-    if (g.cost_credits != null) return `${g.cost_credits} cr`;
-    if (g.cost_usd != null) return `$${Number(g.cost_usd).toFixed(g.cost_usd < 0.1 ? 3 : 2)}`;
-    return '';
+    const credits = g.cost_credits != null ? `${g.cost_credits} cr` : '';
+    const usd = g.cost_usd != null ? `$${Number(g.cost_usd).toFixed(g.cost_usd < 0.1 ? 3 : 2)}` : '';
+    return [usd, credits].filter(Boolean).join(' + ');
 }
 
 function galleryItem(g) {
@@ -196,7 +196,7 @@ export async function openMediaPanel(who) {
         try {
             const s = c.extensionSettings.flux_media;
             const refs = Object.values(profile.refs).map(r => r?.asset).filter(Boolean);
-            const job = await runDetached({ kind: 'image', selection: s.image, prompt, refs, folder: who.folder, origin: 'panel', lora_for: { name: who.name, sd_prompt: who.sdPrompt || '' } });
+            const job = await runDetached({ kind: 'image', selection: s.image, prompt, refs, folder: who.folder, origin: 'panel', person_key: who.key, lora_for: { name: who.name, sd_prompt: who.sdPrompt || '' } });
             const blob = await (await fetch(`${bridgeBase()}${job.file_url}`)).blob();
             await saveFromBlob(slot, blob);
         } catch (err) {

@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import flux_lora_bridge as bridge  # noqa: E402
 from media import director  # noqa: E402
+from media.routes import public_generation  # noqa: E402
 from media_support import noisy_jpeg, small_jpeg  # noqa: E402
 
 AUTH = {"Authorization": "Bearer test-token"}
@@ -125,6 +126,18 @@ def main():
         caps = client.get("/media/capabilities", headers=AUTH).json()
         nano = next(p for p in caps["video"]["providers"] if p["id"] == "nanogpt")
         assert "wan-3.0" not in [f["id"] for f in nano["families"]]
+        assert [r["model"] for r in caps["failed_routes"]] == ["alibaba/wan-3.0/image-to-video-spicy"]
+
+        # restore puts it back
+        client.put("/media/routes/nanogpt/alibaba/wan-3.0/image-to-video-spicy", json={"status": "allowed"}, headers=AUTH)
+        caps = client.get("/media/capabilities", headers=AUTH).json()
+        nano = next(p for p in caps["video"]["providers"] if p["id"] == "nanogpt")
+        assert caps["failed_routes"] == [] and "wan-3.0" in [f["id"] for f in nano["families"]]
+
+        # a gallery row counts every step of its generation
+        row = {"id": "g", "kind": "video", "created_at": 1, "cost_credits": 11.25, "steps_usd": 0.04, "steps_credits": None}
+        assert (public_generation(row)["cost_usd"], public_generation(row)["cost_credits"]) == (0.04, 11.25)
+        assert public_generation({"id": "g", "kind": "image", "created_at": 1})["cost_usd"] is None
 
         # the record reads back
         assert client.post("/media/events", json={"events": [{"event": "attached", "generation_id": job["id"], "ms": 12}]}, headers=AUTH).json() == {"ok": True}

@@ -178,7 +178,9 @@ def list_generations(person: str = "", kind: str = "", limit: int = 60, offset: 
     if kind:
         where.append("g.kind = ?")
         args.append(kind)
-    return _rows(f"SELECT g.* FROM generations g {join} WHERE {' AND '.join(where)} "
+    steps = "FROM generations c WHERE c.parent_id = g.id AND c.message_key IS NULL"    # keyframes, Best Option step 1
+    return _rows(f"SELECT g.*, (SELECT SUM(c.cost_usd) {steps}) AS steps_usd, (SELECT SUM(c.cost_credits) {steps}) AS steps_credits "
+                 f"FROM generations g {join} WHERE {' AND '.join(where)} "
                  "ORDER BY g.created_at DESC LIMIT ? OFFSET ?", [*args, limit, offset])
 
 

@@ -79,7 +79,7 @@
 
             <hr>
             <h4>Test this route</h4>
-            <small class="fm-hint">Runs your own prompt on the model selected above, at the lowest setting and shortest length. Pass keeps the route. Fail hides it everywhere.</small>
+            <small class="fm-hint">Runs your own prompt on the model selected above, at the lowest setting and shortest length. Pass keeps the route. Fail hides it everywhere until you restore it.</small>
             <label>What to test <select id="fm_test_kind" class="text_pole"><option value="image">Selected image model</option><option value="video">Selected video model</option></select></label>
             <textarea id="fm_test_prompt" class="text_pole textarea_compact" rows="2" placeholder="Your test prompt"></textarea>
             <div id="fm_test_run" class="menu_button menu_button_icon"><i class="fa-solid fa-vial"></i><span>Run test</span></div>
@@ -87,6 +87,8 @@
             <div id="fm_test_verdict" class="flex-container displayNone">
                 <div id="fm_test_pass" class="menu_button menu_button_icon"><i class="fa-solid fa-check"></i><span>Pass</span></div>
                 <div id="fm_test_fail" class="menu_button menu_button_icon"><i class="fa-solid fa-ban"></i><span>Fail</span></div>
+            </div>
+            <div id="fm_failed_routes" class="fm-hint">
             </div>
 
             <hr>

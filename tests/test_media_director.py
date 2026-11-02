@@ -41,6 +41,10 @@ class GuardTests(unittest.TestCase):
     def test_the_model_flag_stops_the_job(self):
         self.assertIn("minor", director.minor_block(Plan(prompt="x", blocked=True, block_reason="a minor"), []))
 
+    def test_the_age_message_names_who_needs_one(self):
+        people = [Person.from_context({"key": "c:x", "name": "Xena"}), self.adult()]
+        self.assertTrue(director.minor_block(Plan(prompt="x"), people).startswith("Xena needs an age"))
+
     def test_a_person_with_no_age_stops_the_job(self):
         person = Person.from_context({"key": "c:x", "name": "X"})
         self.assertIn("age", director.minor_block(Plan(prompt="x"), [person]))

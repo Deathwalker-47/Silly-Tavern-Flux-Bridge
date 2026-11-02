@@ -13,7 +13,7 @@ PixelDojo (/pixeldojo): /upload, /models/{id}/run, /jobs/{id}, /credits
 Helper LLM (POST /v1/chat/completions, OpenAI-compatible):
   director plan     -> a plan JSON for the first character in the context
   decide            -> {"action", "reason"} ("video"/"pic"/"photo"/"selfie" in the last lines)
-  next speaker      -> the first member who hasn't spoken, then "user"
+  next speaker      -> the first member who hasn't spoken, then "user" ("keep talking" never yields)
   voice tags prompt -> the same line with one [laugh] inserted
   summarizer prompt -> a short visual prompt
 
@@ -101,6 +101,9 @@ def chat(body):
         spoken = set(data.get("spoken_this_turn") or [])
         names = [m.get("name") for m in data.get("members") or [] if not m.get("setting_card")]
         speaker = next((n for n in names if n not in spoken), "user")
+        if "keep talking" in json.dumps(data.get("history")).lower():     # for hitting the round limit
+            speaker = names[0]
+        time.sleep(0.8)                                                   # a window to type or press Stop
         reply = json.dumps({"speaker": speaker, "beat": "reacts to the last line", "long": False})
         log(f"Next speaker -> {speaker}")
     elif "media director" in system:
@@ -116,8 +119,10 @@ def chat(body):
         text = user.split("\n\n", 1)[-1]
         reply = "photo of " + " ".join(text.split()[:30])
         log("Helper summarizer")
-    else:
-        reply = "Mock helper reply."
+    else:                       # SillyTavern's own reply, for chats on this mock
+        reply = f"*smiles and answers* {str(user)[:120]}"
+        if "slowly" in str(user):
+            time.sleep(4)       # a reply long enough to press Stop on
     return {"id": "chatcmpl-mock", "object": "chat.completion",
             "usage": {"prompt_tokens": 10, "completion_tokens": 10},
             "choices": [{"index": 0, "message": {"role": "assistant", "content": reply}, "finish_reason": "stop"}]}
@@ -192,7 +197,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/runware"):
             return self._send(200, runware(body))
         if self.path.startswith("/v1/chat/completions"):
-            return self._send(200, chat(body))
+            reply = chat(body)
+            if not body.get("stream"):
+                return self._send(200, reply)
+            text = reply["choices"][0]["message"]["content"]
+            chunk = {"id": reply["id"], "object": "chat.completion.chunk",
+                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": "stop"}]}
+            return self._send(200, raw=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode(), ctype="text/event-stream")
         if self.path.startswith("/nanogpt"):
             reply = nanogpt(self.path[len("/nanogpt"):], body)
             return self._send(200 if reply else 404, reply or {"error": "not found"})

@@ -54,12 +54,22 @@ def public_catalog(kind: str) -> Dict[str, Any]:
     return {"families": labels, "providers": providers}
 
 
+def failed_routes() -> List[Dict[str, str]]:
+    """What you failed, so a mistaken Fail can be put back."""
+    labels = {(name, o.id): o.label for kind in ("image", "video") for name, families in catalog.tables(kind).items()
+              for options in families.values() for o in options}
+    return [{"provider": r["provider"], "model": r["model_id"],
+             "label": f"{PROVIDER_LABELS.get(r['provider'], r['provider'])}: {labels.get((r['provider'], r['model_id']), r['model_id'])}"}
+            for r in db.route_results() if r["status"] == "banned"]
+
+
 @router.get("/media/capabilities")
 async def capabilities(request: Request = None):
     _check_token(request)
     return {
         "image": public_catalog("image"),
         "video": {**public_catalog("video"), "sogni_network": (MediaConfig.SOGNI_NETWORK or "fast").lower()},
+        "failed_routes": failed_routes(),
         "modes": MODE_TEXT,
         "helper": {"configured": helper.configured, "backend": helper.backend()[3], "default_model": helper.backend()[2]},
         "reference_window": assets.WINDOW,
@@ -213,11 +223,16 @@ def public_generation(row: Dict[str, Any]) -> Dict[str, Any]:
     def parsed(name: str) -> Any:
         return json.loads(row[name]) if row.get(name) else None
 
+    def cost(name: str, steps: str) -> Any:
+        """What the whole generation cost, not only its last render."""
+        spent = [v for v in (row.get(name), row.get(steps)) if v is not None]
+        return round(sum(spent), 4) if spent else None
+
     return {
         "id": row["id"], "kind": row["kind"], "provider": row.get("provider"), "provider_label": PROVIDER_LABELS.get(row.get("provider") or "", row.get("provider")),
         "model_id": row.get("model_id"), "family": row.get("family"), "mode": row.get("mode"), "prompt": row.get("prompt"),
         "seed": row.get("seed"), "aspect_ratio": row.get("aspect_ratio"), "resolution": row.get("resolution"), "seconds": row.get("seconds"),
-        "cost_usd": row.get("cost_usd"), "cost_credits": row.get("cost_credits"), "rating": row.get("rating"), "comment": row.get("comment"),
+        "cost_usd": cost("cost_usd", "steps_usd"), "cost_credits": cost("cost_credits", "steps_credits"), "rating": row.get("rating"), "comment": row.get("comment"),
         "url": row.get("st_url") if (row.get("st_url") or "").startswith("/") else None,
         "file_url": f"/media/files/{row['id']}" if row.get("file_path") else None,
         "refs": parsed("refs_json") or [], "loras": parsed("loras_json") or [], "created_at": row["created_at"],

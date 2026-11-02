@@ -51,18 +51,23 @@ function forget(jobId) {
 
 // ---- messages ----
 
-/** A random id stored on the message, saved straight away so it survives a reload. */
+/**
+ * A random id stored on the message, saved straight away so it survives a reload.
+ * SillyTavern copies extra onto a new swipe, so the key remembers which swipe it was made on.
+ */
 export async function messageKey(message) {
     if (!message.extra || typeof message.extra !== 'object') message.extra = {};
-    if (!message.extra.fm_key) {
+    const swipe = message.swipe_id ?? 0;
+    if (!message.extra.fm_key || message.extra.fm_swipe !== swipe) {
         message.extra.fm_key = Math.random().toString(36).slice(2, 10);
+        message.extra.fm_swipe = swipe;
         await ctx().saveChat();
     }
     return message.extra.fm_key;
 }
 
 export function messageIndexByKey(key) {
-    return key ? ctx().chat.findIndex(m => m?.extra?.fm_key === key) : -1;
+    return key ? ctx().chat.findIndex(m => m?.extra?.fm_key === key && (m.swipe_id ?? 0) === (m.extra.fm_swipe ?? 0)) : -1;
 }
 
 // ---- status line ----
@@ -79,7 +84,10 @@ function statusLine(job) {
         el.id = id;
         el.className = 'fm-status';
         el.innerHTML = '<span class="fm-status-text"></span> <span class="fm-cancel menu_button_icon" title="Cancel"><i class="fa-solid fa-xmark"></i> Cancel</span>';
-        el.querySelector('.fm-cancel').addEventListener('click', () => cancelJob(job.id));
+        el.querySelector('.fm-cancel').addEventListener('click', (event) => {
+            event.currentTarget.textContent = 'Cancelling…';
+            cancelJob(job.id);
+        });
         block.appendChild(el);
         return el;
     };
@@ -165,7 +173,7 @@ async function watch(first) {
     let hidden = 0;
     try {
         for (let job = first; ;) {
-            if (job.status === 'done') return await saveResult(job, started);
+            if (job.status === 'done') return await saveResult({ ...job, origin: first.origin }, started);
             if (ENDED.includes(job.status)) {
                 forget(job.id);
                 if (job.status === 'failed') {
