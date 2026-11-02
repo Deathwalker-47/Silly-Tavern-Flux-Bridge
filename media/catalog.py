@@ -171,10 +171,10 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
         "seedream-4.5": [_i("nanogpt", "seedream-4.5", "seedream-v4.5", "Seedream 4.5", REF, tested=True, max_refs=10, ref_field="input_references",
                             aspects=ALL_SHAPES, lowest="2304x4096", usd=0.04, hint="$0.04, 10 refs", sizes=SEEDREAM_45_SIZES)],
         "seedream-5-pro": [_i("nanogpt", "seedream-5-pro", "bytedance/seedream-v5.0-pro/edit", "Seedream 5 Pro", REF, tested=True, max_refs=10,
-                              ref_field="input_references", aspects=ALL_SHAPES, lowest="1k", usd=0.045, hint="$0.045, 10 refs",
+                              ref_field="input_references", aspects=ALL_SHAPES, lowest="1k", usd=0.09, hint="$0.09, 10 refs",
                               hidden=True, resolution="1k", send_aspect=True, needs_ref=True)],
         "best": [_i("nanogpt", "best", "best", "The Best Option", REF, tested=True, max_refs=10, aspects=ALL_SHAPES, lowest="1k",
-                    usd=0.085, hint="$0.085: Seedream 5 Pro scene, then Seedream 4.5 face pass")],
+                    usd=0.13, hint="$0.13: Seedream 5 Pro scene ($0.09), then Seedream 4.5 face pass ($0.04)")],
     },
     "sogni": {
         "zimage": [_i("sogni", "zimage", "z_image_turbo_bf16", "Z-Image Turbo", ("text",), tested=True, lowest="768x1344", hint="Spark, no LoRA", sizes=FLUX_SIZES)],
@@ -199,7 +199,7 @@ VIDEO_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
                        usd_per_second=0.05, hint="$0.05/s, 15 s clip $0.75", params=("resolution", "duration", "seed"))],
         "seedance-2": [
             _v("nanogpt", "seedance-2", "bytedance/seedance-2.0-fast/image-to-video-spicy", "Seedance 2 Fast Spicy", FRAMES,
-               ("480p", "720p", "1080p"), _span(4, 15), usd_per_second=0.10, hint="$0.10/s, 15 s clip $1.50", audio_switch=True,
+               ("480p", "720p", "1080p"), _span(4, 15), usd_per_second=0.10, hint="$0.10/s, 15 s clip $1.50. Can undress unprompted", audio_switch=True,
                params=("resolution", "duration", "aspect_ratio", "generateAudio", "last_image", "seed")),
             _v("nanogpt", "seedance-2", "bytedance/seedance-2.0/image-to-video-spicy", "Seedance 2 Spicy", FRAMES,
                ("480p", "720p", "1080p"), _span(4, 15), usd_per_second=0.12, hint="$0.12/s, 15 s clip $1.80", audio_switch=True,
