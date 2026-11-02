@@ -148,6 +148,18 @@ class NanoGPTTests(ProviderCase):
         self.assertTrue(body["last_image"].startswith("data:"))
         self.assertIs(body["generateAudio"], False)
 
+    def test_seedream_5_pro_is_half_price_only_when_every_reference_has_the_shape(self):
+        tall, wide, square = noisy_jpeg(864, 1536), noisy_jpeg(1536, 864), noisy_jpeg(1000, 1000)
+        req = req_for("image", "nanogpt", "seedream-5-pro", aspect_ratio="9:16")
+        provider = NanoGPT()
+        cheap = provider.build_image(req, [tall, tall])
+        self.assertEqual((cheap["resolution"], "aspect_ratio" in cheap), ("1k", False))
+        for refs in ([tall, wide], [square], [wide]):
+            self.assertEqual(provider.build_image(req, refs)["aspect_ratio"], "9:16", refs)
+        self.assertEqual(provider.build_image(req, [])["aspect_ratio"], "9:16", "with no reference nothing sets the shape")
+        near = provider.build_image(req, [noisy_jpeg(880, 1536)])        # 2% off: still takes the references' shape
+        self.assertNotIn("aspect_ratio", near)
+
     def test_seedream_45_image_body(self):
         req = req_for("image", "nanogpt", "seedream-4.5", aspect_ratio="16:9")
         body = NanoGPT().build_image(req, [noisy_jpeg()])
