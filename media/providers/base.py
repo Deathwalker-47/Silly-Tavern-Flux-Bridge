@@ -32,6 +32,7 @@ class RenderRequest:
     audio: bool = False
     adult: bool = False
     network: str = ""               # Sogni only: fast | relaxed
+    budget: bool = False            # cheapest tier even when that means the references set the shape
     params: Dict[str, Any] = field(default_factory=dict)   # filled in by submit: what was sent, no keys or image data
     cost_usd: Optional[float] = None
     cost_credits: Optional[float] = None

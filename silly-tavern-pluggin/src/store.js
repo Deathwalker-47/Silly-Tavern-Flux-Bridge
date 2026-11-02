@@ -53,6 +53,8 @@ export async function attachMedia(messageId, { url, type, title, origin, job }) 
     const element = $(`#chat .mes[mesid="${messageId}"]`);
     if (element.length) c.appendMediaToMessage(message, element, 'keep');
     await c.saveChat();
+    // A voice call's window covers the chat, so it shows new media itself.
+    document.dispatchEvent(new CustomEvent('mediastudio:attached', { detail: { chatId: c.getCurrentChatId(), messageId, url, type, title } }));
 }
 
 /** Media items already on a message (images and videos). */

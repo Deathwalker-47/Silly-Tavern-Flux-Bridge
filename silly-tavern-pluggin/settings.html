@@ -31,6 +31,7 @@
             </div>
             <label id="fm_image_variant_row" class="displayNone">Variant <select id="fm_image_variant" class="text_pole"></select></label>
             <small id="fm_image_hint" class="fm-hint"></small>
+            <label class="checkbox_label"><input type="checkbox" data-fm="seedream1k"> Seedream 5 Pro on NanoGPT: always the $0.045 tier (about 800x1424). The picture then takes the references' shape instead of the scene's; the scene's shape costs $0.09.</label>
             <small class="fm-hint">Flux and Z-Image use the character's LoRA. With no LoRA, Flux switches to Seedream 4.5 with references, and Z-Image generates a random likeness.</small>
 
             <hr>
@@ -74,13 +75,13 @@
             </label>
             <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoImages"> The director may send images</label>
             <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoVideos"> The director may send videos</label>
+            <small class="fm-hint">No waiting between media: the director sends a photo or video whenever the scene gives a reason to, voice calls included.</small>
             <div class="fm-grid">
-                <label>Messages between images <input data-fm="imageCooldown" class="text_pole" type="number" min="0" max="50"></label>
-                <label>Messages between videos <input data-fm="videoCooldown" class="text_pole" type="number" min="0" max="100"></label>
                 <label>Max images a day <small>(0 = no limit)</small> <input data-fm="dailyImageCap" class="text_pole" type="number" min="0" max="1000"></label>
                 <label>Max videos a day <small>(0 = no limit)</small> <input data-fm="dailyVideoCap" class="text_pole" type="number" min="0" max="500"></label>
             </div>
             <small id="fm_usage" class="fm-hint"></small>
+            <label class="checkbox_label"><input type="checkbox" data-fm="chatBarButtons"> Photo and video buttons beside the send button (for the last character message)</label>
             <label class="checkbox_label"><input type="checkbox" data-fm="notifyCharacter"> Tell the character what it sent (one-line note for the next reply)</label>
 
             <hr>
@@ -104,7 +105,7 @@
 
             <hr>
             <label class="checkbox_label"><input type="checkbox" data-fm="debug"> Debug logging</label>
-            <small class="fm-hint">Slash commands: <code>/fmimage [request]</code>, <code>/fmvideo [request]</code>. Per message: <i class="fa-solid fa-image"></i> image, <i class="fa-solid fa-film"></i> video. References and Appearance are on the <i class="fa-solid fa-images"></i> button in the character editor and persona panel. Groups: <i class="fa-solid fa-clapperboard"></i> in the group editor.</small>
+            <small class="fm-hint">Slash commands: <code>/fmimage [request]</code>, <code>/fmvideo [request]</code>. Chat bar: <i class="fa-solid fa-image"></i> and <i class="fa-solid fa-film"></i> beside send. Per message: <i class="fa-solid fa-image"></i> image, <i class="fa-solid fa-film"></i> video. References and Appearance are on the <i class="fa-solid fa-images"></i> button in the character editor and persona panel. Groups: <i class="fa-solid fa-clapperboard"></i> in the group editor.</small>
         </div>
     </div>
 </div>

@@ -148,6 +148,7 @@ async def collect(provider: Any, task_id: str, req: RenderRequest, created_at: f
 async def render(job: Any, req: RenderRequest, row_id: Optional[str] = None) -> RenderResult:
     row_id = row_id or job.id
     provider = PROVIDERS[req.option.provider]
+    req.budget = bool(getattr(job, "budget", False))
     trim_prompt(req)
     fields = dict(provider=req.option.provider, model_id=req.option.id, family=req.option.family, mode=req.mode,
                   prompt=req.prompt, negative_prompt=req.negative_prompt, aspect_ratio=req.aspect_ratio,

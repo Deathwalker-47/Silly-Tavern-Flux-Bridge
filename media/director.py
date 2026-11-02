@@ -220,14 +220,28 @@ def minor_block(plan: Plan, people: Sequence[Person]) -> Optional[str]:
 # ---- send media or not ----
 
 DECIDE_SYSTEM = """You are the media director for a roleplay chat between {user} and {char}.
-After {char}'s latest message, decide whether {char} also sends {user} a photo or a short video, the way a person texting would.
+After {char}'s latest message, decide whether the scene also gets a photo or a short video right now.
 
-Send media only when it clearly fits:
-- image: {user} asks for a picture or selfie, {char} says they'll send one, shows off an outfit, a look or a place, or a strongly visual moment happens.
-- video: {user} asks for a video or clip, or a moment where motion matters (dancing, a gesture, a reveal) and a still photo would lose it. Videos cost more: choose image unless motion matters or a video was asked for.
-- none: ordinary conversation. Most messages are "none".
-{limits}
+Send media whenever the scene gives a real reason to see something. Many moments do, for example:
+- anyone asks for, takes, sends or shows a photo, selfie or video. That includes {user} photographing or filming {char}: show the picture that was taken.
+- {char} says they'll send something, or shows off an outfit, a look, their body, a place or an object.
+- a new place, a new outfit, someone arriving, a change of scene, time of day or weather.
+- a visual, dramatic, romantic or intimate moment, a reaction worth seeing, a reveal.
+- {char} describes what they are doing, wearing or seeing in a way you could photograph.
+Choose "none" only when there is nothing new to see: plain talk, logistics, or the same scene with nothing changed since the last media. Never send media at random.
+
+- image: the default when there is something to see.
+- video: when motion matters (dancing, a gesture, a reveal, something happening) or a video was asked for or is being filmed. Videos cost more.
+{context}{limits}
 Reply with only a JSON object: {{"action": "none|image|video", "reason": "<10 words>"}}"""
+
+
+def _ago(count: Any) -> str:
+    try:
+        n = int(count)
+    except (TypeError, ValueError):
+        return "never in this chat"
+    return "on the latest message" if n == 0 else f"{n} {'message' if n == 1 else 'messages'} ago"
 
 
 async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -237,7 +251,14 @@ async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
         allowed = [a for a, ok in (("image", allow_image), ("video", allow_video)) if ok]
         limits = f"\nRight now only these are allowed: {', '.join(allowed) or 'none'}. Anything else must be \"none\".\n"
     char, user = body.get("char") or "Character", body.get("user") or "User"
-    system = DECIDE_SYSTEM.format(user=user, char=char, limits=limits)
+    context = ""
+    if "since_image" in body or "since_video" in body:
+        context += (f"\nLast photo: {_ago(body.get('since_image'))}. Last video: {_ago(body.get('since_video'))}."
+                    " Use this only to avoid repeating the same shot, not as a quota.\n")
+    if body.get("call"):
+        context += (f"\n{user} and {char} are on a live voice call: {char}'s lines are spoken, not texted. People still send photos and"
+                    f" videos while on the phone, so the same reasons apply, and anything {char} says they're sending should arrive.\n")
+    system = DECIDE_SYSTEM.format(user=user, char=char, limits=limits, context=context)
     transcript = []
     for m in body.get("history") or []:
         transcript.append(f"{m.get('name') or ('User' if m.get('is_user') else char)}: {m.get('text') or ''}")
@@ -253,7 +274,8 @@ async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
     if action not in ("none", "image", "video") or (action == "image" and not allow_image) or (action == "video" and not allow_video):
         action = "none"
     result = {"action": action, "reason": str(decision.get("reason") or "")[:200]}
-    telemetry.record("director", "decide", ok=True, chat_id=body.get("chat_id"), allow_image=allow_image, allow_video=allow_video, **result)
+    telemetry.record("director", "decide", ok=True, chat_id=body.get("chat_id"), allow_image=allow_image, allow_video=allow_video,
+                     call=bool(body.get("call")), **result)
     return result
 
 

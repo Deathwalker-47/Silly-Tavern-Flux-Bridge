@@ -188,6 +188,23 @@ class PlanCallTests(MediaCase):
         self.assertIn(long_text.strip(), seen[0])
         self.assertEqual(out["action"], "image")
 
+    def test_decide_hears_about_calls_and_recent_media(self):
+        seen = []
+
+        async def chat(messages, **_kw):
+            seen.append(messages[0]["content"])
+            return '{"action": "image"}'
+        with unittest.mock.patch.object(director.helper, "chat", chat):
+            run(director.decide({"reply": "Hang on, sending you a pic", "char": "Maya", "user": "Sam", "call": True,
+                                 "since_image": 0, "since_video": None}))
+            run(director.decide({"reply": "Look at this view", "char": "Maya", "user": "Sam"}))
+        self.assertIn("live voice call", seen[0])
+        self.assertIn("Last photo: on the latest message. Last video: never in this chat.", seen[0])
+        self.assertIn("Sam photographing or filming Maya", seen[0])
+        self.assertNotIn("voice call", seen[1])
+        self.assertNotIn("Last photo", seen[1])
+        self.assertNotIn("Most messages", seen[1], "no longer told that media is rare")
+
     def test_next_speaker_must_be_a_member(self):
         members = [{"name": "Maya"}, {"name": "Lena"}]
         with self.with_replies('{"speaker": "lena", "beat": "shrugs", "long": true}'):

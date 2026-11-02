@@ -12,6 +12,7 @@ import { openMediaPanel } from './src/media-panel.js';
 import { charKey, getCharProfile, getPersonaProfile, personaId, personaName, setCharProfile, setPersonaProfile } from './src/profile.js';
 import { messageMedia, messagesSinceMedia } from './src/store.js';
 import { track } from './src/telemetry.js';
+import { fixTouchAutocomplete } from './src/touch-autocomplete.js';
 
 const ctx = () => SillyTavern.getContext();
 const KEY = 'flux_media';          // extension_settings key and character card field
@@ -25,14 +26,14 @@ const DEFAULTS = Object.freeze({
     autoMedia: 'director',          // off | director | every_turn
     allowAutoImages: true,
     allowAutoVideos: true,
-    imageCooldown: 3,
-    videoCooldown: 8,
     dailyImageCap: 60,              // 0 = unlimited
     dailyVideoCap: 10,              // 0 = unlimited
     image: { provider: 'runware', family: 'flux-lora', variant: '' },
     video: { provider: 'sogni', family: 'minimax-h3', variant: '', mode: 'reference' },
     sogniNetwork: '',
     videoAudio: false,              // only for models with an audio switch
+    seedream1k: false,              // Seedream 5 Pro on NanoGPT: $0.045 at 1k in the references' shape, not $0.09 in the scene's
+    chatBarButtons: true,
     aspect: 'director',             // director | 9:16 | 3:4 | 16:9
     notifyCharacter: true,
     personas: {},
@@ -40,7 +41,7 @@ const DEFAULTS = Object.freeze({
     debug: false,
 });
 const RETIRED = ['imageMode', 'imageSize', 'steps', 'cfg', 'helperModel', 'videoProvider', 'videoFamily', 'videoVariant',
-    'videoDuration', 'videoResolution', 'useTwoImages', 'directorModel'];
+    'videoDuration', 'videoResolution', 'useTwoImages', 'directorModel', 'imageCooldown', 'videoCooldown'];
 const SKIP_TYPES = new Set(['first_message', 'swipe', 'continue', 'impersonate', 'quiet']);
 
 function settings() {
@@ -125,7 +126,7 @@ async function jobBody(kind, messageId, origin, request) {
     const body = {
         kind, selection: s[kind], image_selection: s.image, context, aspect: s.aspect, origin,
         folder: char?.name || 'MediaStudio', group_id: c.groupId || null,
-        sogni_network: s.sogniNetwork || undefined, audio: !!s.videoAudio,
+        sogni_network: s.sogniNetwork || undefined, audio: !!s.videoAudio, seedream_1k: !!s.seedream1k,
     };
     if (kind === 'video') {
         const images = messageMedia(msg).filter(m => m.type === 'image');
@@ -154,6 +155,31 @@ async function generate(kind, messageId, { origin = 'manual', request = '' } = {
     }
 }
 
+/** Image or video for the latest character message: chat bar buttons, a voice call, /fmimage. */
+async function generateLast(kind, request = '') {
+    const id = lastCharacterMessageId();
+    if (id < 0) return toastr.info('There is no character message to make it from yet.', 'Media Studio');
+    await generate(kind, id, { request });
+}
+
+/**
+ * A failed job stays on screen until you close it: a toast that vanishes in five seconds is easy
+ * to miss on a phone. A missing age opens the panel where it's set.
+ */
+async function reportFailure(job, { away = false } = {}) {
+    const error = job.error || 'Generation failed';
+    const title = `Media Studio: ${job.kind} failed${away ? ' while you were away' : ''}`;
+    const who = /^(.+?) needs an age of 18/.exec(error)?.[1];
+    let fix = null;
+    if (who) {
+        const c = ctx();
+        const chid = c.characters.findIndex(ch => ch.name === who);
+        if (chid >= 0) fix = () => openCharacterPanel(chid, 'appearance');
+        else fix = () => openPersonaPanel();      // not a character, so it's you: your persona's Media panel
+    }
+    toastr.error(`${error}${fix ? ' Tap to fix it.' : ''}`, title, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: !fix, onclick: fix || undefined });
+}
+
 // ---------------------------------------------------------------------------
 // Auto media after each character message, or once per group round
 // ---------------------------------------------------------------------------
@@ -180,16 +206,18 @@ async function autoMedia(messageId, mode) {
         return generate('image', messageId, { origin: 'auto' });
     }
 
-    // Cooldowns and caps are enforced here, not left to the LLM.
-    const allowImage = s.allowAutoImages && imageReady && messagesSinceMedia('image') >= Number(s.imageCooldown) && underCap(u.images, s.dailyImageCap);
-    const allowVideo = s.allowAutoVideos && videoReady && messagesSinceMedia('video') >= Number(s.videoCooldown) && underCap(u.videos, s.dailyVideoCap);
-    if (!allowImage && !allowVideo) return track('auto_skip', { reason: 'cooldown_or_cap' });
+    // No cooldown: the director sends media whenever the scene calls for it. Daily caps still hold.
+    const allowImage = s.allowAutoImages && imageReady && underCap(u.images, s.dailyImageCap);
+    const allowVideo = s.allowAutoVideos && videoReady && underCap(u.videos, s.dailyVideoCap);
+    if (!allowImage && !allowVideo) return track('auto_skip', { reason: 'cap' });
     try {
         const d = await bridge('/director/decide', {
             method: 'POST',
             body: {
                 chat_id: c.getCurrentChatId(), reply: String(msg.mes || ''), history: history(messageId), char: char?.name || c.name2, user: c.name1,
                 allow_image: allowImage, allow_video: allowVideo,
+                since_image: finiteOrNull(messagesSinceMedia('image')), since_video: finiteOrNull(messagesSinceMedia('video')),
+                call: !!globalThis.TavernVoice?.call,
             },
         });
         log('director', d);
@@ -203,6 +231,8 @@ async function autoMedia(messageId, mode) {
     }
 }
 
+const finiteOrNull = (n) => (Number.isFinite(n) ? n : null);
+
 function onMessageReceived(messageId, type) {
     if (noteArmed) {
         ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
@@ -211,7 +241,7 @@ function onMessageReceived(messageId, type) {
     const s = settings();
     if (s.autoMedia === 'off' || SKIP_TYPES.has(type) || loopActive()) return;
     const msg = ctx().chat[messageId];
-    if (!msg || msg.is_user || msg.is_system || msg.extra?.type === 'narrator' || String(msg.mes || '').length < 20) return;
+    if (!msg || msg.is_user || msg.is_system || msg.extra?.type === 'narrator' || !/[\p{L}\p{N}]/u.test(String(msg.mes || ''))) return;
     autoMedia(messageId, s.autoMedia);
 }
 
@@ -306,6 +336,7 @@ async function refreshBridgeStatus({ quiet = true } = {}) {
         const ready = [...caps.image.providers, ...caps.video.providers].filter(p => p.configured).map(p => p.label.split(' (')[0]);
         $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · ${[...new Set(ready)].join(', ') || 'no providers'} · director: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
         renderPickers();
+        refreshChatBarButtons();
         renderFailedRoutes();
         refreshBalances();
         if (!quiet) toastr.success('Bridge connected.', 'Media Studio');
@@ -510,6 +541,7 @@ function bindSettings() {
         if (s[k] === v) return;
         s[k] = v;
         save();
+        if (k === 'chatBarButtons') refreshChatBarButtons();
     });
     for (const kind of ['image', 'video']) {
         const change = (field) => function () {
@@ -605,6 +637,22 @@ function addMessageButtons() {
     $(document).on('click', '.fm_mes_video', function () { generate('video', Number($(this).closest('.mes').attr('mesid'))); });
 }
 
+/** Image and video buttons beside the send button, for the latest character message. */
+function addChatBarButtons() {
+    $('#send_but').before('<div id="fm_bar_image" class="fa-solid fa-image interactable fm-bar-button displayNone" tabindex="0" title="Media Studio: photo for the last message"></div>'
+        + '<div id="fm_bar_video" class="fa-solid fa-film interactable fm-bar-button displayNone" tabindex="0" title="Media Studio: video for the last message"></div>');
+    $('#fm_bar_image').on('click', () => generateLast('image'));
+    $('#fm_bar_video').on('click', () => generateLast('video'));
+}
+
+function refreshChatBarButtons() {
+    const c = ctx();
+    const inChat = !!c.getCurrentChatId() && (!!c.groupId || (c.characterId !== undefined && c.characterId !== null));
+    const show = settings().chatBarButtons && inChat;
+    $('#fm_bar_image').toggleClass('displayNone', !show || !routeReady('image'));
+    $('#fm_bar_video').toggleClass('displayNone', !show || !routeReady('video'));
+}
+
 async function refreshCharButton() {
     const c = ctx();
     const editing = c.characterId !== undefined && c.characterId !== null && c.menuType !== 'create';
@@ -623,8 +671,7 @@ function registerSlashCommands() {
     const command = (name, kind, help) => SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name,
         callback: async (_a, request) => {
-            const id = lastCharacterMessageId();
-            if (id >= 0) await generate(kind, id, { request: String(request || '') });
+            await generateLast(kind, String(request || ''));
             return '';
         },
         unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional request for the director', typeList: [ARGUMENT_TYPE.STRING] })],
@@ -660,7 +707,10 @@ jQuery(async () => {
     configureJobs({
         counted(kind) { usage()[kind]++; save(); },
         note: noteForCharacter,
+        failed: reportFailure,
     });
+    addChatBarButtons();
+    fixTouchAutocomplete();
     initGroups({ onRoundEnd });
 
     c.eventSource.on(et.MESSAGE_RECEIVED, onMessageReceived);
@@ -671,6 +721,7 @@ jQuery(async () => {
         ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
         noteArmed = false;
         refreshCharButton();
+        refreshChatBarButtons();
         resumeOpenJobs();
     });
     c.eventSource.on(et.CHARACTER_EDITOR_OPENED, refreshCharButton);
@@ -679,6 +730,6 @@ jQuery(async () => {
     await refreshBridgeStatus();
     resumeOpenJobs();
 
-    globalThis.MediaStudio = { settings, generate, onMessageReceived, resumeOpenJobs };
+    globalThis.MediaStudio = { settings, generate, generateLast, onMessageReceived, resumeOpenJobs };
     console.log(TAG, 'loaded');
 });
