@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from . import loras, telemetry
+from . import assets, loras, telemetry
 from .config import MediaConfig
 from .helper import extract_json, helper
 from .references import DEFAULT_ORDER, Person
@@ -35,7 +35,7 @@ Reply with one JSON object only.
 4. Otherwise choose POV or third person from the scene. Include at most "people_cap" people, main character first.
 5. Use each person's Appearance text. It wins over anything else, including the chat.
 6. Order the reference slots for this scene in "ref_order": face_1, face_2, full_body, portrait, naked. Never drop one. Code fits as many as the model allows.
-7. Choose "aspect_ratio" from the model's allowed list: tall subjects and phone-style framing 9:16, wide scenes and groups 16:9. If 9:16 isn't allowed use 3:4, and if that isn't either use landscape. Leave it empty when the list says the first frame sets the shape.
+7. Choose "aspect_ratio" from the model's allowed list, and let the scene decide it: tall subjects and phone-style framing take 9:16, wide scenes, landscapes and groups 16:9. The references never limit this choice. They are sent exactly as they are and are never cropped, padded or stretched, whatever shape the picture has. Each person's "reference_shapes" gives their real shapes; use it only to break a tie between shapes that suit the scene equally. If a shape isn't allowed use the nearest allowed one, portrait before landscape. Leave it empty when the list says the first frame sets the shape. Give the reason in "aspect_reason".
 8. Write in the target model's format below. Refer to a reference image only as {{ref:Name:slot}}, for example {{ref:Maya:face_1}}. Never write an image number.
 9. Set "blocked" to true only if the scene sexualizes anyone under 18 or anyone described as a child, and say why in "block_reason". Never soften, refuse or reword anything else.
 10. Set "adult" to true when the scene shows nudity or sex. It only chooses LoRAs and never changes the prompt.
@@ -123,8 +123,9 @@ class DirectorInput:
 
         def person(p: Person) -> Dict[str, Any]:
             lora = loras.character_lora(p.name, p.sd_prompt, arch)
+            shapes = {slot: text for slot, key in p.refs.items() if (text := assets.shape_text(key))}
             return {"key": p.key, "name": p.name, "age": p.age, "appearance": p.appearance, "slots": list(p.refs),
-                    "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
+                    "reference_shapes": shapes, "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
 
         out["characters"] = [person(p) for p in self.characters]
         if self.user:
