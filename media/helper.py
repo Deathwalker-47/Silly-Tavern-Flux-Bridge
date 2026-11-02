@@ -119,7 +119,7 @@ Rules:
 - "sound": a few words on how their voice sounds (age, tone, pace, accent), or empty.
 - "gender": female, male or other.
 - "voice": the id of the voice below that best fits their gender, age and personality. Give each person a different voice when the list allows it.
-- If the card says a person speaks a particular language (Malayalam, Hindi, ...), pick a voice listed for that language. Ids starting with elevenlabs: or heygen: come from those providers; the others are xAI voices.
+- If the card says a person speaks a particular language (Malayalam, Hindi, ...), pick a voice listed for that language. Ids starting with elevenlabs:, heygen: or cartesia: come from those providers; the others are xAI voices. A cartesia: voice speaks every language, so its listed language is only its accent.
 Voices (id: description):
 {voices}
 Reply with one JSON object only: {{"people": [{{"name": "", "gender": "", "about": "", "sound": "", "voice": ""}}]}}"""
