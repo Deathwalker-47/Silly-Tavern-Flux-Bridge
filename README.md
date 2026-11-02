@@ -282,8 +282,8 @@ Add keys under API keys in the Media Studio settings, or in the bridge's .env.
 A key saved in settings replaces the one in .env. It's stored in
 `data/keys.json` on the bridge and never sent back, and saving needs
 EDIT_API_TOKEN set on the bridge. A provider with no key disappears from every
-picker. The xAI key for TavernVoice can go here too: it stays in SillyTavern,
-because TavernVoice calls xAI from the browser.
+picker. TavernVoice's keys (xAI, ElevenLabs, HeyGen) don't go here: they stay
+in SillyTavern, because TavernVoice calls those providers from the browser.
 
   Runware    RUNWARE_API_KEY      Flux Dev + LoRA, Juggernaut Z + LoRA
   NanoGPT    NANOGPT_API_KEY      Seedream 4.5, Qwen Edit, The Best Option, video,
@@ -308,7 +308,9 @@ python dev/insights.py --export out.jsonl
 ```
 
 TavernVoice (https://github.com/Deathwalker-47/TavernVoice) uses the same
-bridge for its "voice director" (POST /helper/voice-tags).
+bridge for its "voice director" (POST /helper/voice-tags) and to find the people
+on a story card (POST /helper/cast), giving each a voice in the language they
+speak from any provider TavernVoice has a key for.
 
 --------------------------------------------------------------------------------
 BRIDGE ON A REMOTE SERVER (SILLYTAVERN OVER HTTPS)

@@ -2535,7 +2535,7 @@ class VoiceTagsRequest(BaseModel):
 class CastRequest(BaseModel):
     card: dict = Field(default_factory=dict, description="name, description, personality, scenario, first_mes, mes_example, lore")
     user: str = Field(default="")
-    voices: list = Field(default_factory=list, description="[{voice_id, name, gender, description}]")
+    voices: list = Field(default_factory=list, description="[{voice_id, name, gender, language, description}]")
     model: Optional[str] = Field(default=None)
 
 # ============================================
