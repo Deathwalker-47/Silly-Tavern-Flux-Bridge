@@ -306,7 +306,9 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-import media_studio as ms  # video providers + helper LLM (see media_studio.py)
+import media as ms  # helper LLM and Replicate client; the rest of Media Studio is in media/
+from media import loras as media_loras, routes as media_routes
+from media.jobs import runner as media_jobs
 from lora_dict import check_unique_urls, flat_entry, migrate_dict
 
 app = FastAPI()
@@ -429,12 +431,7 @@ class Config:
     REPLICATE_FLUX_MODEL = os.getenv("REPLICATE_FLUX_MODEL", "lucataco/flux-dev-multi-lora")
     MAXLORAS_REPLICATE = int(os.getenv("MAXLORAS_REPLICATE", 6))
 
-    # ---- Media Studio: character images from avatars (no LoRA) ----
-    # Separate from KONTEXT_MODEL, which the Immich editor uses. Kontext [dev] is open
-    # weights, so there is no hosted-model content filter in front of it.
-    AVATAR_KONTEXT_MODEL = os.getenv("AVATAR_KONTEXT_MODEL", "runware:106@1")
-
-    # Prompt summarization runs on the helper LLM. See media_studio.HelperLLM.
+    # Prompt summarization runs on the helper LLM. See media/helper.py.
     TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "")  # deprecated image client only
     ENABLE_SUMMARIZATION = os.getenv("ENABLE_SUMMARIZATION", "true").lower() == "true"
     SUMMARY_MAX_LENGTH = int(os.getenv("SUMMARY_MAX_LENGTH", 300))
@@ -487,12 +484,12 @@ class Config:
         logger.info(f"  {'✅' if cls.ENABLE_SUMMARIZATION and helper_label != 'none' else '❌'} Prompt summarization - {helper_label}/{helper_model or 'n/a'}")
         logger.info("")
         logger.info("MEDIA STUDIO:")
-        for provider in ("runware", "nanogpt", "sogni", "replicate", "mock"):
+        for provider in ms.PROVIDERS:
             if provider == "mock" and not ms.MediaConfig.VIDEO_MOCK_PROVIDER:
                 continue
-            logger.info(f"  {'✅' if ms.provider_configured(provider) else '❌'} Video: {ms.PROVIDER_LABELS[provider]}")
+            logger.info(f"  {'✅' if ms.provider_configured(provider) else '❌'} {ms.PROVIDER_LABELS[provider]}")
         logger.info(f"  {'✅' if ms.helper.configured else '❌'} Helper LLM: {ms.helper.backend()[3]}/{ms.helper.backend()[2] or 'n/a'}")
-        logger.info(f"  Avatar images (no LoRA): Kontext {cls.AVATAR_KONTEXT_MODEL}")
+        logger.info(f"  Director: {ms.MediaConfig.DIRECTOR_MODEL} | data: {ms.MediaConfig.DATA_DIR}")
         logger.info("")
         logger.info("FLUX KONTEXT IMAGE EDIT (POST /edit):")
         logger.info(f"  Model: {cls.KONTEXT_MODEL} | steps: {cls.KONTEXT_STEPS} | CFG: {cls.KONTEXT_CFG} | timeout: {cls.KONTEXT_TIMEOUT}s")
@@ -2522,52 +2519,6 @@ class Txt2ImgResponse(BaseModel):
 
 # ---- Media Studio ----
 
-class MediaImageRequest(BaseModel):
-    prompt: str = Field(default="", description="Scene text: raw narrative or a visual prompt")
-    negative_prompt: str = Field(default="")
-    mode: str = Field(default="auto", description="auto | lora | avatar")
-    character_name: str = Field(default="")
-    character_prompts: dict = Field(default_factory=dict)
-    visible_characters: list = Field(default_factory=list)
-    avatars: list = Field(default_factory=list, description="Character avatars (data URI/URL); first = main")
-    width: int = Field(default=1024)
-    height: int = Field(default=1024)
-    steps: int = Field(default=40)
-    cfg_scale: float = Field(default=3.5)
-    seed: int = Field(default=-1)
-
-
-class LoraStatusRequest(BaseModel):
-    names: list = Field(default_factory=list)
-    character_prompts: dict = Field(default_factory=dict)
-
-
-class VideoGenerateRequest(BaseModel):
-    provider: str = Field(default="runware")
-    family: str = Field(default="ltx-2.5", description="ltx-2.3 | ltx-2.5 | wan-2.2 | wan-2.7 | seedance-1.5 | seedance-2.0 | minimax-h3")
-    variant: Optional[str] = Field(default=None, description="Exact model id; default = the provider's first variant")
-    prompt: str = Field(default="", description="Motion prompt")
-    negative_prompt: str = Field(default="")
-    image: Optional[str] = Field(default=None, description="First frame (data URI, base64 or URL)")
-    last_image: Optional[str] = Field(default=None, description="Optional last frame")
-    keyframe: Optional[MediaImageRequest] = Field(default=None, description="Generate the first frame first when no image is given")
-    duration: Optional[float] = Field(default=None)
-    resolution: Optional[str] = Field(default=None)
-    seed: int = Field(default=-1)
-    audio: bool = Field(default=False)
-    sogni_network: str = Field(default="", description="Sogni only: fast (billed) | relaxed (free, slow); empty = SOGNI_NETWORK")
-
-
-class HelperDecideRequest(BaseModel):
-    messages: list = Field(default_factory=list, description="[{name, is_user, text}] oldest first")
-    char: str = Field(default="")
-    user: str = Field(default="")
-    allow_image: bool = Field(default=True)
-    allow_video: bool = Field(default=True)
-    force: Optional[str] = Field(default=None, description="image | video: skip the decision, just write prompts")
-    model: Optional[str] = Field(default=None)
-
-
 class VoiceTagsRequest(BaseModel):
     text: str = Field(default="")
     char: str = Field(default="")
@@ -2585,6 +2536,13 @@ async def startup_event():
     logger.info("")
     logger.info("🚀 Flux LoRA Bridge starting...")
     Config.print_config()
+    await media_jobs.startup()      # picks up jobs left running by the last restart
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await media_jobs.shutdown()     # their rows stay open for the next start
+
 
 @app.get("/")
 async def root():
@@ -3300,203 +3258,12 @@ async def txt2img(request: Txt2ImgRequest):
 
 
 # ============================================
-# MEDIA STUDIO (character images, video, helper LLM)
+# MEDIA STUDIO (see media/; these routes serve TavernVoice too)
 # ============================================
 
-def _character_has_lora(name: str, sd_prompt: str = "") -> bool:
-    """True when a character-category LoRA keyword-matches the character's name or SD prompt."""
-    if not (name or "").strip() and not (sd_prompt or "").strip():
-        return False
-    matched = lora_manager.match_loras_by_keywords(f"{name} {sd_prompt}", "")
-    return any(m.get("reason") != "permanent" and m["data"].get("category") == "character" for m in matched)
-
-
-async def _media_image(req: MediaImageRequest, req_id: str = "") -> Tuple[bytes, Dict]:
-    """One character image, choosing LoRA txt2img or avatar-based Kontext.
-
-    mode=lora   always the txt2img LoRA pipeline
-    mode=avatar Kontext from the avatars (falls back to txt2img when none were sent)
-    mode=auto   LoRA when the character has one, avatar otherwise
-    """
-    req_id = req_id or uuid.uuid4().hex[:8]
-    name = (req.character_name or "").strip()
-    sd_prompt = (req.character_prompts or {}).get(name, "") if name else ""
-    has_lora = _character_has_lora(name, sd_prompt)
-    mode = (req.mode or "auto").lower()
-    avatars = [a for a in (req.avatars or []) if isinstance(a, str) and a.strip()]
-    use_avatar = bool(avatars) and (mode == "avatar" or (mode == "auto" and not has_lora))
-    logger.info(f"🎭 [Media {req_id}] character={name or '-'} mode={mode} has_lora={has_lora} avatars={len(avatars)} -> {'avatar' if use_avatar else 'txt2img'}")
-
-    if not use_avatar:
-        result = await txt2img(Txt2ImgRequest(
-            prompt=req.prompt, negative_prompt=req.negative_prompt, steps=req.steps, cfg_scale=req.cfg_scale,
-            width=req.width, height=req.height, seed=req.seed,
-            character_prompts=req.character_prompts or {}, visible_characters=req.visible_characters or [],
-        ))
-        image_bytes = base64.b64decode(result.images[0])
-        return image_bytes, {
-            "mode": "lora" if has_lora else "text",
-            "has_lora": has_lora,
-            "image_url": (result.image_urls or [None])[0],
-            "prompt": result.parameters.get("final_prompt") or result.parameters.get("summarized_prompt"),
-        }
-
-    scene = req.prompt
-    if Config.ENABLE_SUMMARIZATION and scene:
-        scene = await deepseek_summarizer.summarize_prompt(scene, Config.SUMMARY_MAX_LENGTH, required_names=[name] if name else None)
-    who = name or "the person"
-    instruction = (
-        f"Create a new photo of {who}, the same person shown in the reference image: {scene}. "
-        f"Keep {who}'s face, hairstyle, skin tone and body exactly as in the reference image; "
-        f"change pose, clothing, expression and setting as described."
-    )
-    references, _w, _h = await _prepare_kontext_inputs(avatars[0], avatars[1] if len(avatars) > 1 else None, req_id)
-    width, height = _closest_kontext_size(req.width, req.height)
-    image_bytes = await clients["runware"].edit(
-        instruction, references, {"width": width, "height": height, "model": Config.AVATAR_KONTEXT_MODEL}
-    )
-    _validate_image_bytes(image_bytes, "AvatarKontext")
-    return image_bytes, {
-        "mode": "avatar",
-        "has_lora": has_lora,
-        "image_url": _publish_image_url(image_bytes),
-        "prompt": instruction,
-    }
-
-
-@app.get("/media/capabilities")
-async def media_capabilities():
-    """Everything the SillyTavern extension needs to build its settings menus."""
-    return JSONResponse({
-        "image": {
-            "providers": [{"id": p, "configured": bool(getattr(clients.get(p), "api_key", None) or getattr(clients.get(p), "api_token", None))}
-                          for p in provider_state.get_provider_list()],
-            "avatar_model": Config.AVATAR_KONTEXT_MODEL,
-            "modes": ["auto", "lora", "avatar"],
-        },
-        "video": ms.public_catalog(),
-        "helper": {
-            "configured": ms.helper.configured,
-            "backend": ms.helper.backend()[3],
-            "default_model": ms.helper.backend()[2],
-        },
-        "token_required": bool(Config.EDIT_API_TOKEN),
-    })
-
-
-@app.post("/media/lora-status")
-async def media_lora_status(request: LoraStatusRequest):
-    prompts = request.character_prompts or {}
-    return JSONResponse({"characters": {n: _character_has_lora(n, prompts.get(n, "")) for n in request.names or []}})
-
-
-@app.post("/media/image")
-async def media_image(request: MediaImageRequest, http_request: Request = None):
-    """Character image: LoRA txt2img or avatar-based Kontext (see _media_image)."""
-    _check_edit_token(http_request)
-    req_id = uuid.uuid4().hex[:8]
-    try:
-        image_bytes, meta = await _media_image(request, req_id)
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"🎭 [Media {req_id}] FAILED: {e}")
-        raise HTTPException(status_code=502, detail=f"Image generation failed: {e}")
-    return JSONResponse({
-        "images": [base64.b64encode(image_bytes).decode("utf-8")],
-        "image_urls": [meta["image_url"]] if meta.get("image_url") else [],
-        "mode": meta["mode"],
-        "has_lora": meta["has_lora"],
-        "parameters": meta,
-    })
-
-
-@app.post("/video/generate")
-async def video_generate(request: VideoGenerateRequest, http_request: Request = None):
-    """Start a video job and return its id; poll GET /video/jobs/{id}.
-
-    Videos take 30s to several minutes, longer than most proxies allow for a
-    single request, so this never blocks on the render.
-    """
-    _check_edit_token(http_request)
-    provider = (request.provider or "").lower()
-    if provider not in ms.PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Unknown video provider '{request.provider}'")
-    if not ms.provider_configured(provider):
-        raise HTTPException(status_code=400, detail=f"{ms.PROVIDER_LABELS.get(provider, provider)} is not configured on the bridge")
-    try:
-        variant = ms.find_variant(provider, request.family, request.variant)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not (request.image or "").strip() and request.keyframe is None:
-        raise HTTPException(status_code=400, detail="Send an image (first frame) or a keyframe request")
-
-    prompt = (request.prompt or "").strip() or "natural subtle motion, the person breathes, blinks and shifts slightly, gentle camera push-in"
-    duration = variant.pick_duration(request.duration)
-    resolution = variant.pick_resolution(request.resolution)
-
-    async def run(job: ms.VideoJob) -> bytes:
-        report = ms.reporter(job)
-        if (request.image or "").strip():
-            raw = await _load_edit_image_bytes(request.image, "image")
-        else:
-            report("keyframe", "Generating the first frame")
-            raw, _meta = await _media_image(request.keyframe, job.id[:8])
-            job.keyframe_b64 = base64.b64encode(raw).decode("utf-8")
-            job.keyframe_generated = True
-        image, _w, _h = _normalize_edit_image(raw, "image")
-        last = None
-        if (request.last_image or "").strip() and variant.last_frame:
-            last, _w2, _h2 = _normalize_edit_image(await _load_edit_image_bytes(request.last_image, "last_image"), "last_image")
-        vreq = ms.VideoRequest(
-            provider=provider, family=request.family, variant=variant, prompt=prompt, image=image,
-            last_image=last, negative_prompt=request.negative_prompt or "", duration=duration,
-            resolution=resolution, seed=request.seed, audio=request.audio,
-            sogni_network=request.sogni_network,
-        )
-        return await ms.PROVIDERS[provider].generate(vreq, report)
-
-    job = ms.video_jobs.create(provider, request.family, variant.id, run)
-    logger.info(f"🎬 [Video {job.id}] queued {provider}/{variant.id} {duration}s @ {resolution}")
-    return JSONResponse({
-        "job_id": job.id, "status": job.status, "provider": provider,
-        "variant": variant.id, "duration": duration, "resolution": resolution,
-    })
-
-
-@app.get("/video/jobs/{job_id}")
-async def video_job(job_id: str):
-    job = ms.video_jobs.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Unknown or expired job")
-    return JSONResponse(job.to_public())
-
-
-@app.get("/videos/{video_id}")
-async def get_video(video_id: str):
-    from fastapi.responses import Response  # imported lazily; not part of the test stubs
-    data = ms.video_store.get(video_id.rsplit(".", 1)[0])
-    if data is None:
-        raise HTTPException(status_code=404, detail="Video not found or expired")
-    return Response(content=data, media_type="video/mp4",
-                    headers={"Cache-Control": f"public, max-age={ms.MediaConfig.VIDEO_STORE_TTL}"})
-
-
-@app.post("/helper/decide")
-async def helper_decide(request: HelperDecideRequest, http_request: Request = None):
-    """Should the character send a photo or a video now? Also writes the prompts."""
-    _check_edit_token(http_request)
-    try:
-        return JSONResponse(await ms.helper.decide(
-            messages=request.messages, char=request.char, user=request.user,
-            allow_image=request.allow_image, allow_video=request.allow_video,
-            force=request.force, model=request.model,
-        ))
-    except Exception as e:
-        logger.error(f"🧠 [Helper] decide failed: {e}")
-        raise HTTPException(status_code=502, detail=f"Helper LLM failed: {e}")
+media_routes.use_token_check(_check_edit_token)
+media_loras.use(lora_manager, resolve_runware_loras)
+app.include_router(media_routes.router)
 
 
 @app.post("/helper/voice-tags")

@@ -1,57 +1,60 @@
 // Media Studio for the Flux LoRA Bridge.
-// Characters send photos and videos in chat: decided by the bridge's helper LLM (or
-// every turn), rendered through the bridge, saved into the message and the
-// character's gallery. Also: per-character avatars for characters without a LoRA.
+// Characters send photos and videos in chat. The bridge's director decides what's in the
+// shot and writes the prompt; jobs run on the bridge, so they survive a reload or a locked
+// phone. Character and persona panels hold references, Appearance and the rated gallery.
 
-import { bridge, bridgeBase, bridgeBlob, getCapabilities, cachedCapabilities } from './src/bridge.js';
-import { attachMedia, blobToBase64, imageFormat, messageMedia, messagesSinceMedia, saveFile, urlToDataUri } from './src/store.js';
-import { AVATAR_SLOTS, openCharacterMedia } from './src/gallery.js';
+import { bridge, bridgeBase, cachedCapabilities, getCapabilities } from './src/bridge.js';
+import { urlToAsset } from './src/assets.js';
+import { characterOf, currentGroup, directorContext, history, sdPrompt } from './src/context.js';
+import { groupProfile, initGroups, loopActive, setGroupProfile } from './src/groups.js';
+import { configureJobs, resumeOpenJobs, runDetached, runJob } from './src/jobs.js';
+import { openMediaPanel } from './src/media-panel.js';
+import { charKey, getCharProfile, getPersonaProfile, personaId, personaName, setCharProfile, setPersonaProfile } from './src/profile.js';
+import { messageMedia, messagesSinceMedia } from './src/store.js';
+import { track } from './src/telemetry.js';
 
 const ctx = () => SillyTavern.getContext();
 const KEY = 'flux_media';          // extension_settings key and character card field
 const NOTE_KEY = 'FLUX_MEDIA_NOTE';
 const TAG = '[MediaStudio]';
+const LOW_DIRECTOR_BALANCE = 1;    // USD. The director runs on NanoGPT: at zero, all media stops.
 
 const DEFAULTS = Object.freeze({
     bridgeUrl: '',
     bridgeToken: '',
-    imageMode: 'auto',          // auto | lora | avatar
-    imageSize: 'portrait',      // portrait | square | landscape
-    steps: 40,
-    cfg: 3.5,
-    autoMedia: 'director',      // off | director | every_turn
+    autoMedia: 'director',          // off | director | every_turn
     allowAutoImages: true,
     allowAutoVideos: true,
     imageCooldown: 3,
     videoCooldown: 8,
-    dailyImageCap: 60,
-    dailyVideoCap: 10,
-    helperModel: '',
-    notifyCharacter: true,
-    videoProvider: 'runware',
-    videoFamily: 'ltx-2.5',
-    videoVariant: '',
-    videoDuration: 5,
-    videoResolution: '',
-    videoAudio: false,
+    dailyImageCap: 60,              // 0 = unlimited
+    dailyVideoCap: 10,              // 0 = unlimited
+    image: { provider: 'runware', family: 'flux-lora', variant: '' },
+    video: { provider: 'sogni', family: 'minimax-h3', variant: '', mode: 'reference' },
     sogniNetwork: '',
-    useTwoImages: true,
+    videoAudio: false,              // only for models with an audio switch
+    aspect: 'director',             // director | 9:16 | 3:4 | 16:9
+    notifyCharacter: true,
+    personas: {},
+    groups: {},
     debug: false,
 });
-const CHAR_DEFAULTS = Object.freeze({ avatars: [], imageMode: '', auto: true, avatarPrompt: '' });
-const SIZES = { portrait: [832, 1216], square: [1024, 1024], landscape: [1216, 832] };
+const RETIRED = ['imageMode', 'imageSize', 'steps', 'cfg', 'helperModel', 'videoProvider', 'videoFamily', 'videoVariant',
+    'videoDuration', 'videoResolution', 'useTwoImages', 'directorModel'];
 const SKIP_TYPES = new Set(['first_message', 'swipe', 'continue', 'impersonate', 'quiet']);
 
 function settings() {
     const all = ctx().extensionSettings;
     all[KEY] ??= {};
     const s = all[KEY];
-    for (const [k, v] of Object.entries(DEFAULTS)) if (s[k] === undefined) s[k] = v;
+    for (const [k, v] of Object.entries(DEFAULTS)) if (s[k] === undefined) s[k] = structuredClone(v);
+    for (const k of RETIRED) delete s[k];
     s.usage ??= { date: '', images: 0, videos: 0 };
     return s;
 }
 const save = () => ctx().saveSettingsDebounced();
 const log = (...a) => settings().debug && console.log(TAG, ...a);
+const esc = (s) => $('<span>').text(String(s ?? '')).html();
 
 /** Carry the old plugin's bridge URL over once. */
 function migrateLegacyConfig() {
@@ -67,90 +70,6 @@ function migrateLegacyConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// Characters
-// ---------------------------------------------------------------------------
-
-let cardWrites = Promise.resolve();
-
-async function getCharMedia(chid) {
-    const c = ctx();
-    if (chid === undefined || chid === null || !c.characters[chid]) return { ...CHAR_DEFAULTS };
-    await c.unshallowCharacter?.(chid); // lazy-loaded cards don't carry extension fields
-    return { ...CHAR_DEFAULTS, ...(c.characters[chid]?.data?.extensions?.[KEY] ?? {}) };
-}
-
-/** Queued read-modify-write so quick edits don't overwrite each other. */
-function setCharMedia(chid, patch) {
-    const run = cardWrites.then(async () => {
-        const next = { ...(await getCharMedia(chid)), ...patch };
-        await ctx().writeExtensionField(chid, KEY, next);
-        return next;
-    });
-    cardWrites = run.catch(() => {});
-    return run;
-}
-
-/** The character who wrote a message (group-aware). */
-function characterOf(message) {
-    const c = ctx();
-    if (!c.groupId) return { chid: c.characterId, char: c.characters[c.characterId] };
-    const idx = c.characters.findIndex(ch => ch.avatar === message?.original_avatar || ch.name === message?.name);
-    return { chid: idx >= 0 ? idx : undefined, char: c.characters[idx] };
-}
-
-const sdPrompt = (char) => char?.data?.extensions?.sd_character_prompt || char?.data?.extensions?.sd_api_prompt || '';
-
-function visibleCharacters() {
-    const c = ctx();
-    const names = new Set();
-    // Narrator notes (/sys, e.g. TavernVoice's call markers) are not characters.
-    for (const m of c.chat.slice(-10)) if (!m.is_user && !m.is_system && m.extra?.type !== 'narrator' && m.name) names.add(m.name);
-    if (c.groupId) {
-        const group = c.groups.find(g => g.id === c.groupId);
-        for (const avatar of group?.members ?? []) {
-            const ch = c.characters.find(x => x.avatar === avatar);
-            if (ch?.name) names.add(ch.name);
-        }
-    } else if (c.name2) {
-        names.add(c.name2);
-    }
-    const prompts = {};
-    for (const name of names) {
-        const ch = c.characters.find(x => x.name === name);
-        if (sdPrompt(ch)) prompts[name] = sdPrompt(ch);
-    }
-    return { names: [...names], prompts };
-}
-
-/** Raw scene text for the bridge; its summarizer turns this into a visual prompt. */
-function narrativeFor(messageId) {
-    const c = ctx();
-    const msg = c.chat[messageId];
-    const { char } = characterOf(msg);
-    const { names } = visibleCharacters();
-    const recent = c.chat.slice(Math.max(0, messageId - 3), messageId)
-        .filter(m => !m.is_system).map(m => m.mes).join(' ');
-    return [sdPrompt(char), names.length ? `Characters present: ${names.join(', ')}` : '', msg?.mes || '',
-        recent ? `Recent context: ${recent}` : ''].filter(Boolean).join('\n\n');
-}
-
-function chatTail(uptoId, count = 10) {
-    const c = ctx();
-    return c.chat.slice(Math.max(0, uptoId + 1 - count), uptoId + 1)
-        .filter(m => !m.is_system && m.extra?.type !== 'narrator')
-        .map(m => ({ name: m.name, is_user: !!m.is_user, text: String(m.mes || '') }));
-}
-
-async function avatarsFor(cfg) {
-    const urls = (cfg.avatars || []).filter(Boolean).slice(0, 2);
-    const out = [];
-    for (const url of urls) {
-        try { out.push(await urlToDataUri(url)); } catch (err) { console.warn(TAG, 'avatar unreadable', url, err); }
-    }
-    return out;
-}
-
-// ---------------------------------------------------------------------------
 // Usage limits and the note for the main LLM
 // ---------------------------------------------------------------------------
 
@@ -161,293 +80,224 @@ function usage() {
     return s.usage;
 }
 
-function bumpUsage(kind) {
-    usage()[kind]++;
-    save();
-}
+const underCap = (used, cap) => Number(cap) === 0 || used < Number(cap);
 
 let noteArmed = false;
 
-function noteForCharacter(char, kind, text) {
+function noteForCharacter(job) {
     if (!settings().notifyCharacter) return;
     const c = ctx();
-    const note = `[${char || c.name2} sent ${c.name1} a ${kind}${text ? `: ${String(text).slice(0, 200)}` : ''}]`;
+    const kind = job.kind === 'video' ? 'short video' : 'photo';
+    const text = job.caption || job.prompt;
+    const note = `[${job.folder || c.name2} sent ${c.name1} a ${kind}${text ? `: ${String(text).slice(0, 200)}` : ''}]`;
     c.setExtensionPrompt(NOTE_KEY, note, 1, 1, false, 0); // in-chat, depth 1, system role
     noteArmed = false;
 }
 
 // ---------------------------------------------------------------------------
-// Status line under a message while media renders
+// Generating
 // ---------------------------------------------------------------------------
 
-function statusLine(messageId, text) {
-    const id = `fm-status-${messageId}-${Math.random().toString(36).slice(2, 7)}`;
-    const place = () => {
-        let el = document.getElementById(id);
-        if (!el) {
-            const block = document.querySelector(`#chat .mes[mesid="${messageId}"] .mes_block`);
-            if (!block) return null;
-            el = document.createElement('div');
-            el.id = id;
-            el.className = 'fm-status';
-            block.appendChild(el);
-        }
-        return el;
-    };
-    const set = (t) => { const el = place(); if (el) el.innerHTML = t; };
-    set(text);
-    return { set, remove: () => document.getElementById(id)?.remove() };
-}
+const warnedAge = new Set();
 
-// ---------------------------------------------------------------------------
-// Image and video generation
-// ---------------------------------------------------------------------------
-
-async function imageRequest(messageId, prompt) {
-    const s = settings();
-    const c = ctx();
-    const msg = c.chat[messageId];
-    const { chid, char } = characterOf(msg);
-    const cfg = await getCharMedia(chid);
-    const { names, prompts } = visibleCharacters();
-    const [width, height] = SIZES[s.imageSize] || SIZES.portrait;
-    return {
-        body: {
-            prompt: prompt || narrativeFor(messageId),
-            character_name: char?.name || c.name2,
-            character_prompts: prompts,
-            visible_characters: names,
-            mode: cfg.imageMode || s.imageMode,
-            avatars: await avatarsFor(cfg),
-            width, height, steps: Number(s.steps), cfg_scale: Number(s.cfg),
-        },
-        char,
-    };
-}
-
-const busy = new Set(); // "image:12" / "video:12" so a message isn't generated twice at once
-
-async function generateImage(messageId, { prompt = '', caption = '', origin = 'manual' } = {}) {
-    const key = `image:${messageId}`;
-    if (busy.has(key)) return;
-    busy.add(key);
-    const chatId = ctx().getCurrentChatId();
-    const status = statusLine(messageId, '<i class="fa-solid fa-spinner fa-spin"></i> Generating image…');
-    try {
-        const { body, char } = await imageRequest(messageId, prompt);
-        const res = await bridge('/media/image', { method: 'POST', body, timeout: 0 });
-        const b64 = res.images?.[0];
-        if (!b64) throw new Error('The bridge returned no image');
-        const url = await saveFile(b64, imageFormat(b64), char?.name || 'MediaStudio', `img_${Date.now()}`);
-        bumpUsage('images');
-        if (ctx().getCurrentChatId() !== chatId) {
-            toastr.info('Chat changed; the image was saved to the character gallery.', 'Media Studio');
-            return;
-        }
-        await attachMedia(messageId, { url, type: 'image', title: caption || res.parameters?.prompt || body.prompt, origin });
-        noteForCharacter(char?.name, 'photo', caption || prompt);
-        log('image', res.mode, url);
-    } catch (err) {
-        console.error(TAG, err);
-        toastr.error(err?.message || String(err), 'Media Studio: image failed');
-    } finally {
-        status.remove();
-        busy.delete(key);
+/** A character with no age can't be generated. One toast, with a way to fix it. */
+async function ageMissing(chid, char, origin) {
+    if (chid === undefined || !char) return false;
+    const profile = await getCharProfile(chid);
+    if (Number(profile.appearance?.age) >= 18) return false;
+    track('auto_skip', { reason: 'no_age', origin });
+    if (origin === 'manual' || !warnedAge.has(char.avatar)) {
+        warnedAge.add(char.avatar);
+        toastr.warning(`${char.name} needs an age of 18 or over before media can be generated. Tap to add it.`, 'Media Studio', {
+            timeOut: 12000, onclick: () => openCharacterPanel(chid, 'appearance'),
+        });
     }
+    return true;
 }
 
-async function generateVideo(messageId, { motion = '', imagePrompt = '', caption = '', origin = 'manual' } = {}) {
-    const key = `video:${messageId}`;
-    if (busy.has(key)) return;
-    busy.add(key);
+async function jobBody(kind, messageId, origin, request) {
     const s = settings();
     const c = ctx();
-    const chatId = c.getCurrentChatId();
     const msg = c.chat[messageId];
     const { char } = characterOf(msg);
-    const folder = char?.name || 'MediaStudio';
-    const status = statusLine(messageId, '<i class="fa-solid fa-film"></i> Preparing video…');
-    try {
+    const context = await directorContext(messageId, kind, groupProfile());
+    if (request) context.user_request = request;
+    const body = {
+        kind, selection: s[kind], image_selection: s.image, context, aspect: s.aspect, origin,
+        folder: char?.name || 'MediaStudio', group_id: c.groupId || null,
+        sogni_network: s.sogniNetwork || undefined, audio: !!s.videoAudio,
+    };
+    if (kind === 'video') {
         const images = messageMedia(msg).filter(m => m.type === 'image');
-        const payload = {
-            provider: s.videoProvider,
-            family: s.videoFamily,
-            variant: s.videoVariant || undefined,
-            prompt: motion,
-            duration: Number(s.videoDuration) || 5,
-            resolution: s.videoResolution || undefined,
-            audio: !!s.videoAudio,
-            sogni_network: s.videoProvider === 'sogni' ? s.sogniNetwork || undefined : undefined,
-        };
-        if (images.length) {
-            // Animate the message's own image; with 2+ images, travel from the first to the last.
-            const two = s.useTwoImages && images.length > 1;
-            payload.image = await urlToDataUri(images[two ? 0 : images.length - 1].url);
-            if (two) payload.last_image = await urlToDataUri(images[images.length - 1].url);
-        } else {
-            payload.keyframe = (await imageRequest(messageId, imagePrompt)).body;
-        }
-        const job = await bridge('/video/generate', { method: 'POST', body: payload });
-        const started = Date.now();
-        let state = job;
-        while (!['done', 'failed'].includes(state.status)) {
-            await new Promise(r => setTimeout(r, 2500));
-            state = await bridge(`/video/jobs/${job.job_id}`, { timeout: 20000 });
-            const secs = Math.round((Date.now() - started) / 1000);
-            status.set(`<i class="fa-solid fa-film fa-beat-fade"></i> ${state.message || state.status} · ${secs}s`);
-        }
-        if (state.status === 'failed') throw new Error(state.error || 'Video generation failed');
+        const twoFrames = s.video.mode === 'first_last';
+        if (images.length) body.message_image_asset = await urlToAsset(images[twoFrames ? 0 : images.length - 1].url);
+        if (twoFrames && images.length > 1) body.last_image_asset = await urlToAsset(images[images.length - 1].url);
+    }
+    return body;
+}
 
-        const sameChat = () => ctx().getCurrentChatId() === chatId;
-        if (state.keyframe_b64) {
-            // The bridge made the first frame; keep it too, so the chat has the still.
-            const kurl = await saveFile(state.keyframe_b64, imageFormat(state.keyframe_b64), folder, `frame_${Date.now()}`);
-            if (sameChat()) await attachMedia(messageId, { url: kurl, type: 'image', title: imagePrompt || motion, origin });
-        }
-        const blob = await bridgeBlob(state.video_path);
-        const vurl = await saveFile(await blobToBase64(blob), 'mp4', folder, `video_${Date.now()}`);
-        bumpUsage('videos');
-        if (!sameChat()) {
-            toastr.info('Chat changed; the video was saved to the character gallery.', 'Media Studio');
-            return;
-        }
-        await attachMedia(messageId, { url: vurl, type: 'video', title: caption || motion, origin });
-        noteForCharacter(char?.name, 'short video', caption || motion);
-        log('video', state);
+const busy = new Set(); // "image:12" / "video:12" so a message isn't sent to the bridge twice at once
+
+async function generate(kind, messageId, { origin = 'manual', request = '' } = {}) {
+    const key = `${kind}:${messageId}`;
+    if (busy.has(key)) return;
+    busy.add(key);
+    try {
+        const { chid, char } = characterOf(ctx().chat[messageId]);
+        if (await ageMissing(chid, char, origin)) return;
+        await runJob(await jobBody(kind, messageId, origin, request), messageId);
     } catch (err) {
         console.error(TAG, err);
-        toastr.error(err?.message || String(err), 'Media Studio: video failed');
+        toastr.error(err?.message || String(err), `Media Studio: ${kind} failed`);
     } finally {
-        status.remove();
         busy.delete(key);
     }
 }
 
-/** Motion + still prompts for a manual video: from the helper when available. */
-async function promptsForVideo(messageId) {
+// ---------------------------------------------------------------------------
+// Auto media after each character message, or once per group round
+// ---------------------------------------------------------------------------
+
+let warnedDirector = false;
+
+async function autoMedia(messageId, mode) {
     const s = settings();
     const c = ctx();
     const msg = c.chat[messageId];
+    if (mode === 'off' || !msg) return;
+    const { chid, char } = characterOf(msg);
+    const profile = await getCharProfile(chid);
+    if (profile.auto === false) return track('auto_skip', { reason: 'character_off' });
+    if (await ageMissing(chid, char, 'auto')) return;
+    const u = usage();
+
+    if (mode === 'every_turn') {
+        if (!underCap(u.images, s.dailyImageCap)) return track('auto_skip', { reason: 'image_cap' });
+        return generate('image', messageId, { origin: 'auto' });
+    }
+
+    // Cooldowns and caps are enforced here, not left to the LLM.
+    const providers = cachedCapabilities()?.video?.providers ?? [];
+    const videoReady = !!providers.find(p => p.id === s.video.provider)?.configured;
+    const allowImage = s.allowAutoImages && messagesSinceMedia('image') >= Number(s.imageCooldown) && underCap(u.images, s.dailyImageCap);
+    const allowVideo = s.allowAutoVideos && videoReady && messagesSinceMedia('video') >= Number(s.videoCooldown) && underCap(u.videos, s.dailyVideoCap);
+    if (!allowImage && !allowVideo) return track('auto_skip', { reason: 'cooldown_or_cap' });
     try {
-        const d = await bridge('/helper/decide', {
+        const d = await bridge('/director/decide', {
             method: 'POST',
-            body: { messages: chatTail(messageId), char: characterOf(msg).char?.name || c.name2, user: c.name1, force: 'video', model: s.helperModel || undefined },
+            body: {
+                chat_id: c.getCurrentChatId(), reply: String(msg.mes || ''), history: history(messageId), char: char?.name || c.name2, user: c.name1,
+                allow_image: allowImage, allow_video: allowVideo,
+            },
         });
-        return { motion: d.motion_prompt, imagePrompt: d.image_prompt, caption: d.caption };
+        log('director', d);
+        if (d.action === 'image' || d.action === 'video') generate(d.action, messageId, { origin: 'auto' });
     } catch (err) {
-        log('helper unavailable for video prompts', err);
-        return { motion: '', imagePrompt: '', caption: '' };
+        console.warn(TAG, 'director failed', err);
+        if (!warnedDirector) {
+            warnedDirector = true;
+            toastr.warning(`The director is unavailable, so auto media is paused for now: ${err?.message || err}`, 'Media Studio');
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Auto media after each character message
-// ---------------------------------------------------------------------------
-
-let warnedHelper = false;
-
-async function onMessageReceived(messageId, type) {
+function onMessageReceived(messageId, type) {
     if (noteArmed) {
         ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
         noteArmed = false;
     }
     const s = settings();
-    if (s.autoMedia === 'off' || SKIP_TYPES.has(type)) return;
-    const c = ctx();
-    const msg = c.chat[messageId];
+    if (s.autoMedia === 'off' || SKIP_TYPES.has(type) || loopActive()) return;
+    const msg = ctx().chat[messageId];
     if (!msg || msg.is_user || msg.is_system || msg.extra?.type === 'narrator' || String(msg.mes || '').length < 20) return;
-    const { chid, char } = characterOf(msg);
-    const cfg = await getCharMedia(chid);
-    if (cfg.auto === false) return;
-    const u = usage();
+    autoMedia(messageId, s.autoMedia);
+}
 
-    if (s.autoMedia === 'every_turn') {
-        if (u.images >= Number(s.dailyImageCap)) return;
-        generateImage(messageId, { origin: 'auto' });
-        return;
-    }
+function lastCharacterMessageId() {
+    const chat = ctx().chat;
+    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user && !chat[i].is_system) return i;
+    return -1;
+}
 
-    // Helper decides. Cooldowns and caps are enforced here, not left to the LLM.
-    const caps = cachedCapabilities();
-    const videoReady = !!caps?.video?.providers?.find(p => p.id === s.videoProvider)?.configured;
-    const allowImage = s.allowAutoImages && messagesSinceMedia('image') >= Number(s.imageCooldown) && u.images < Number(s.dailyImageCap);
-    const allowVideo = s.allowAutoVideos && videoReady && messagesSinceMedia('video') >= Number(s.videoCooldown) && u.videos < Number(s.dailyVideoCap);
-    if (!allowImage && !allowVideo) return;
-    try {
-        const d = await bridge('/helper/decide', {
-            method: 'POST',
-            body: {
-                messages: chatTail(messageId), char: char?.name || c.name2, user: c.name1,
-                allow_image: allowImage, allow_video: allowVideo, model: s.helperModel || undefined,
-            },
-        });
-        log('director', d);
-        if (d.action === 'image') generateImage(messageId, { prompt: d.image_prompt, caption: d.caption, origin: 'auto' });
-        else if (d.action === 'video') generateVideo(messageId, { motion: d.motion_prompt, imagePrompt: d.image_prompt, caption: d.caption, origin: 'auto' });
-    } catch (err) {
-        console.warn(TAG, 'director failed', err);
-        if (!warnedHelper) {
-            warnedHelper = true;
-            toastr.warning(`Helper LLM unavailable, so auto media is paused for now: ${err?.message || err}`, 'Media Studio');
-        }
-    }
+async function onRoundEnd(profile) {
+    const id = lastCharacterMessageId();
+    if (id >= 0 && settings().autoMedia !== 'off') await autoMedia(id, profile.media_mode);
 }
 
 // ---------------------------------------------------------------------------
-// Settings panel
+// Settings: the image and video pickers
 // ---------------------------------------------------------------------------
 
-const esc = (s) => $('<span>').text(String(s ?? '')).html();
-
-function videoSelection() {
+const routeInfo = (kind) => {
     const s = settings();
-    const caps = cachedCapabilities();
-    const provider = caps?.video?.providers?.find(p => p.id === s.videoProvider);
-    const family = provider?.families?.find(f => f.id === s.videoFamily);
-    const variant = family?.variants?.find(v => v.id === s.videoVariant) || family?.variants?.[0];
+    const caps = cachedCapabilities()?.[kind];
+    const provider = caps?.providers?.find(p => p.id === s[kind].provider);
+    const family = provider?.families?.find(f => f.id === s[kind].family);
+    const variant = family?.variants?.find(v => v.id === s[kind].variant) || family?.variants?.[0];
     return { caps, provider, family, variant };
+};
+
+/** A saved route the bridge dropped falls back to the default, then to anything configured. */
+function keepRouteValid(kind) {
+    const s = settings();
+    const { caps, provider, family, variant } = routeInfo(kind);
+    if (!caps) return;
+    if (!provider?.configured || !family || !variant) {
+        const fallback = DEFAULTS[kind];
+        const usable = (p, f) => p?.configured && p.families.find(x => x.id === f);
+        const home = caps.providers.find(p => p.id === fallback.provider);
+        const first = caps.providers.find(p => p.configured && p.id !== 'mock' && p.families.length) || caps.providers.find(p => p.configured && p.families.length);
+        const chosen = usable(home, fallback.family) ? home : first;
+        if (!chosen) return;
+        const familyId = chosen.families.find(f => f.id === fallback.family)?.id || chosen.families[0].id;
+        s[kind] = { ...s[kind], provider: chosen.id, family: familyId, variant: '' };
+    }
+    if (s[kind].variant && !routeInfo(kind).family.variants.some(v => v.id === s[kind].variant)) s[kind].variant = '';
+    if (kind === 'video') {
+        const modes = routeInfo('video').variant.modes;
+        if (!modes.includes(s.video.mode)) s.video.mode = modes[0];
+    }
+    save();
 }
 
-function renderVideoPickers() {
+function renderPicker(kind) {
     const s = settings();
-    const { caps, provider, family, variant } = videoSelection();
+    const { caps, provider, family, variant } = routeInfo(kind);
     if (!caps) return;
-    $('#fm_video_provider').html(caps.video.providers.map(p =>
-        `<option value="${p.id}" ${p.id === s.videoProvider ? 'selected' : ''} ${p.configured ? '' : 'disabled'}>${esc(p.label)}${p.configured ? '' : ' (no key on bridge)'}</option>`).join(''));
-    $('#fm_video_family').html((provider?.families || []).map(f =>
-        `<option value="${f.id}" ${f.id === s.videoFamily ? 'selected' : ''}>${esc(f.label)}</option>`).join('')
-        || '<option value="">No models</option>');
-    $('#fm_video_variant').html((family?.variants || []).map(v =>
-        `<option value="${esc(v.id)}" ${v.id === variant?.id ? 'selected' : ''}>${esc(v.label)}${v.hint ? ` (${esc(v.hint)})` : ''}</option>`).join(''));
-    $('#fm_video_resolution').html(['<option value="">Model default</option>', ...(variant?.resolutions || []).map(r =>
-        `<option value="${esc(r)}" ${r === s.videoResolution ? 'selected' : ''}>${esc(r)}</option>`)].join(''));
-    $('#fm_sogni_network_row').toggleClass('displayNone', s.videoProvider !== 'sogni');
-    $('#fm_sogni_network option[value=""]').text(`Bridge default (${caps.video.sogni_network || 'fast'})`);
-    if (variant) {
-        const durs = variant.durations;
-        const hint = variant.duration_mode === 'options' ? `allowed: ${durs.join(', ')} s` : `${durs[0]}–${durs[1]} s`;
-        $('#fm_video_duration_hint').text(`${hint}${variant.last_frame ? ' · supports first+last frame' : ''}`);
+    $(`#fm_${kind}_provider`).html(caps.providers.filter(p => p.families.length).map(p =>
+        `<option value="${p.id}" ${p.id === s[kind].provider ? 'selected' : ''} ${p.configured ? '' : 'disabled'}>${esc(p.label)}${p.configured ? '' : ' (no key on bridge)'}</option>`).join(''));
+    $(`#fm_${kind}_family`).html((provider?.families || []).map(f =>
+        `<option value="${esc(f.id)}" ${f.id === s[kind].family ? 'selected' : ''}>${esc(f.label)}</option>`).join('') || '<option value="">No models</option>');
+    $(`#fm_${kind}_variant`).html((family?.variants || []).map(v =>
+        `<option value="${esc(v.id)}" ${v.id === variant?.id ? 'selected' : ''}>${esc(v.label)}</option>`).join(''));
+    $(`#fm_${kind}_variant_row`).toggleClass('displayNone', (family?.variants?.length || 0) < 2);
+    $(`#fm_${kind}_hint`).text(variant?.hint || '');
+    if (kind === 'video') {
+        const modes = cachedCapabilities().modes;
+        $('#fm_video_modes').html((variant?.modes || []).map(m =>
+            `<label class="checkbox_label"><input type="radio" name="fm_video_mode" value="${m}" ${m === s.video.mode ? 'checked' : ''}> ${esc(modes[m].label)}</label>`).join(''));
+        $('#fm_video_mode_text').text(modes[s.video.mode]?.text || '');
+        $('#fm_sogni_network_row').toggleClass('displayNone', s.video.provider !== 'sogni');
+        $('#fm_sogni_network option[value=""]').text(`Bridge default (${cachedCapabilities().video.sogni_network || 'fast'})`);
+        $('#fm_video_audio_row').toggleClass('displayNone', !variant?.audio_switch);
     }
+}
+
+function renderPickers() {
+    keepRouteValid('image');
+    keepRouteValid('video');
+    renderPicker('image');
+    renderPicker('video');
 }
 
 async function refreshBridgeStatus({ quiet = true } = {}) {
     const $s = $('#fm_status');
     try {
         const caps = await getCapabilities(true);
-        const configuredVideo = caps.video.providers.filter(p => p.configured).map(p => p.label);
-        $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · video: ${configuredVideo.join(', ') || 'none'} · helper: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
-        // Keep the chosen provider valid.
-        const s = settings();
-        if (!caps.video.providers.find(p => p.id === s.videoProvider)?.configured) {
-            const first = caps.video.providers.find(p => p.configured && p.id !== 'mock') || caps.video.providers.find(p => p.configured);
-            if (first) { s.videoProvider = first.id; s.videoFamily = first.families[0]?.id || ''; s.videoVariant = ''; save(); }
-        }
-        // ...and the model, if the bridge dropped it for that provider (e.g. LTX-2.3 on Runware).
-        const families = caps.video.providers.find(p => p.id === s.videoProvider)?.families || [];
-        if (families.length && !families.some(f => f.id === s.videoFamily)) {
-            s.videoFamily = families[0].id; s.videoVariant = ''; s.videoResolution = ''; save();
-        }
-        renderVideoPickers();
+        const ready = caps.video.providers.filter(p => p.configured).map(p => p.label.split(' (')[0]);
+        $s.removeClass('fm-bad').addClass('fm-ok').text(`Connected · ${ready.join(', ') || 'no providers'} · director: ${caps.helper.configured ? caps.helper.default_model : 'not set'}`);
+        renderPickers();
+        refreshBalances();
         if (!quiet) toastr.success('Bridge connected.', 'Media Studio');
     } catch (err) {
         $s.removeClass('fm-ok').addClass('fm-bad').text(err?.message || 'Not connected');
@@ -455,20 +305,77 @@ async function refreshBridgeStatus({ quiet = true } = {}) {
     }
 }
 
-async function loadHelperModels(refresh = false) {
-    const s = settings();
-    const $sel = $('#fm_helper_model');
+async function refreshBalances() {
     try {
-        const data = await bridge(`/helper/models${refresh ? '?refresh=true' : ''}`, { timeout: 40000 });
-        const filter = String($('#fm_helper_filter').val() || '').toLowerCase();
-        const models = data.models.filter(m => !filter || m.id.toLowerCase().includes(filter) || String(m.name).toLowerCase().includes(filter));
-        const price = (m) => (m.input_price != null ? ` · $${m.input_price}/$${m.output_price} per M` : '');
-        $sel.html([`<option value="">Bridge default (${esc(data.default_model)})</option>`,
-            ...models.slice(0, 400).map(m => `<option value="${esc(m.id)}" ${m.id === s.helperModel ? 'selected' : ''}>${esc(m.id)}${price(m)}</option>`)].join(''));
-        if (s.helperModel && !models.some(m => m.id === s.helperModel)) $sel.append(`<option value="${esc(s.helperModel)}" selected>${esc(s.helperModel)}</option>`);
+        const { balances } = await bridge('/media/balances', { timeout: 30000 });
+        const text = balances.filter(b => b.amount != null).map((b) => {
+            const name = b.label.split(' (')[0];
+            return b.unit === 'USD' ? `${name} $${b.amount.toFixed(2)}` : `${name} ${Math.round(b.amount)} ${b.unit}`;
+        });
+        $('#fm_balances').text(text.join(' · '));
+        const director = balances.find(b => b.id === 'nanogpt');
+        if (director?.amount != null && director.amount < LOW_DIRECTOR_BALANCE) {
+            toastr.warning(`NanoGPT is down to $${director.amount.toFixed(2)}. The director runs there, so at zero all media stops.`, 'Media Studio');
+        }
     } catch (err) {
-        $sel.html(`<option value="${esc(s.helperModel)}">${esc(s.helperModel || 'Bridge default')}</option>`);
+        log('balances', err);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Settings: test a route, read the pipeline report
+// ---------------------------------------------------------------------------
+
+async function testRoute() {
+    const kind = $('#fm_test_kind').val();
+    const prompt = String($('#fm_test_prompt').val() || '').trim();
+    const s = settings();
+    const route = s[kind];
+    const $out = $('#fm_test_out').text('Running at the lowest setting…');
+    $('#fm_test_verdict').addClass('displayNone');
+    try {
+        const job = await runDetached({ kind, selection: route, prompt, motion_prompt: kind === 'video' ? prompt : '', image_selection: s.image, audio: false }, '/media/routes/test');
+        const url = `${bridgeBase()}${job.file_url}`;
+        $out.html(kind === 'video' ? `<video src="${esc(url)}" controls class="fm-test-media"></video>` : `<img src="${esc(url)}" class="fm-test-media" alt="">`);
+        const { variant } = routeInfo(kind);
+        $('#fm_test_verdict').removeClass('displayNone').data('route', { provider: route.provider, model: variant.id });
+    } catch (err) {
+        $out.text(err?.detail || err?.message || String(err));
+    }
+}
+
+async function saveVerdict(status) {
+    const { provider, model } = $('#fm_test_verdict').data('route');
+    await bridge(`/media/routes/${provider}/${model}`, { method: 'PUT', body: { status } });
+    $('#fm_test_verdict').addClass('displayNone');
+    toastr.success(status === 'allowed' ? 'Route passed.' : 'Route failed and hidden from the picker.', 'Media Studio');
+    refreshBridgeStatus();
+}
+
+const money = (r) => [r.total_usd ? `$${r.total_usd.toFixed(2)}` : '', r.total_credits ? `${r.total_credits} cr` : ''].filter(Boolean).join(' + ') || '-';
+
+async function openReport() {
+    const c = ctx();
+    let r;
+    try {
+        r = await bridge('/media/insights?days=30', { timeout: 30000 });
+    } catch (err) {
+        return toastr.error(err?.message || String(err), 'Media Studio');
+    }
+    const routes = r.routes.map(x => `<tr><td>${esc(x.model)}<br><small>${esc(x.provider)} · ${esc(x.mode || '')}</small></td><td>${x.done}/${x.runs}</td><td>${x.median_seconds ?? '-'}s</td><td>${money(x)}</td><td>${x.rating ?? '-'}</td></tr>`).join('');
+    const notes = r.suggestions.map(n => `<li>${esc(n)}</li>`).join('') || '<li>Not enough runs yet. Rate your generations and this fills in.</li>';
+    const tables = Object.entries(r.tables).map(([name, rows]) => rows.length ? `<h4>By ${esc(name)}</h4><table class="fm-report"><tr><th></th><th>Runs</th><th>Rated</th><th>Rating</th></tr>${rows.slice(0, 8).map(x => `<tr><td>${esc(x.value)}</td><td>${x.runs}</td><td>${x.rated}</td><td>${x.rating ?? '-'}</td></tr>`).join('')}</table>` : '').join('');
+    const slow = r.steps.filter(x => x.median_ms).sort((a, b) => b.median_ms - a.median_ms).slice(0, 8)
+        .map(x => `<tr><td>${esc(x.stage)}/${esc(x.event)}</td><td>${x.count}</td><td>${(x.median_ms / 1000).toFixed(1)}s</td><td>${x.failure_rate == null ? '-' : `${Math.round(x.failure_rate * 100)}%`}</td></tr>`).join('');
+    const $root = $(`<div class="fm-popup">
+        <h3>Pipeline report: last 30 days</h3>
+        <p>${r.totals.done} of ${r.totals.generations} generations finished · $${r.totals.usd.toFixed(2)} + ${r.totals.credits} cr · average rating ${r.totals.rating ?? '-'}</p>
+        <h4>What to look at</h4><ul>${notes}</ul>
+        <h4>Routes</h4><table class="fm-report"><tr><th>Model</th><th>Done</th><th>Median</th><th>Spent</th><th>Rating</th></tr>${routes}</table>
+        ${tables}
+        <h4>Slowest steps</h4><table class="fm-report"><tr><th>Step</th><th>Count</th><th>Median</th><th>Failed</th></tr>${slow}</table>
+    </div>`);
+    await c.callGenericPopup($root, c.POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: true, large: true, allowVerticalScrolling: true, leftAlign: true });
 }
 
 function bindSettings() {
@@ -489,34 +396,85 @@ function bindSettings() {
         if (s[k] === v) return;
         s[k] = v;
         save();
-        if (k === 'bridgeUrl' || k === 'bridgeToken') return;
-        if (k === 'videoProvider') { s.videoFamily = videoSelection().provider?.families?.[0]?.id || ''; s.videoVariant = ''; s.videoResolution = ''; }
-        if (k === 'videoFamily') { s.videoVariant = ''; s.videoResolution = ''; }
-        if (k === 'videoVariant') { s.videoResolution = ''; }
-        if (k.startsWith('video')) renderVideoPickers();
     });
-    $('#fm_bridge_url, #fm_bridge_token').on('change', async () => {
-        await refreshBridgeStatus({ quiet: false });
-        loadHelperModels();
+    for (const kind of ['image', 'video']) {
+        const change = (field) => function () {
+            s[kind][field] = this.value;
+            if (field === 'provider') { s[kind].family = routeInfo(kind).provider?.families?.[0]?.id || ''; s[kind].variant = ''; }
+            if (field === 'family') s[kind].variant = '';
+            keepRouteValid(kind);
+            renderPicker(kind);
+        };
+        $(`#fm_${kind}_provider`).on('change', change('provider'));
+        $(`#fm_${kind}_family`).on('change', change('family'));
+        $(`#fm_${kind}_variant`).on('change', change('variant'));
+    }
+    $root.on('change', 'input[name="fm_video_mode"]', function () {
+        s.video.mode = this.value;
+        save();
+        renderPicker('video');
     });
+    $('#fm_bridge_url, #fm_bridge_token').on('change', () => refreshBridgeStatus({ quiet: false }));
     $('#fm_test').on('click', () => refreshBridgeStatus({ quiet: false }));
-    $('#fm_helper_refresh').on('click', () => loadHelperModels(true));
-    $('#fm_helper_filter').on('input', () => loadHelperModels(false));
-    $('#fm_helper_test').on('click', async () => {
-        const $out = $('#fm_helper_out').text('Asking the helper…');
-        try {
-            const r = await bridge('/helper/voice-tags', { method: 'POST', body: { text: 'Wait, you actually came all this way just to see me?', char: 'Test', model: s.helperModel || undefined } });
-            $out.text(r.error ? `Error: ${r.error}` : `Helper says: ${r.text}`);
-        } catch (err) {
-            $out.text(`Error: ${err?.message || err}`);
-        }
-    });
+    $('#fm_test_run').on('click', testRoute);
+    $('#fm_test_pass').on('click', () => saveVerdict('allowed'));
+    $('#fm_test_fail').on('click', () => saveVerdict('banned'));
+    $('#fm_report').on('click', openReport);
     $('#fm_usage').text(`Today: ${usage().images} images, ${usage().videos} videos`);
 }
 
 // ---------------------------------------------------------------------------
-// Buttons: per message and on the character card
+// Panels and buttons
 // ---------------------------------------------------------------------------
+
+function openCharacterPanel(chid, tab) {
+    const char = ctx().characters[chid];
+    if (!char) return;
+    return openMediaPanel({
+        name: char.name, key: charKey(char), folder: char.name, sdPrompt: sdPrompt(char), tab,
+        load: () => getCharProfile(chid), save: patch => setCharProfile(chid, patch),
+    });
+}
+
+async function openPersonaPanel() {
+    const id = await personaId();
+    const name = personaName(id);
+    return openMediaPanel({
+        name, key: `persona:${id}`, folder: name,
+        load: async () => getPersonaProfile(id), save: async patch => setPersonaProfile(id, patch),
+    });
+}
+
+async function openGroupPanel() {
+    const c = ctx();
+    const group = currentGroup();
+    if (!group) return toastr.info('Open a group chat first.', 'Media Studio');
+    const profile = groupProfile(group.id);
+    const options = group.members.map((avatar) => {
+        const ch = c.characters.find(x => x.avatar === avatar);
+        return ch ? `<option value="${esc(avatar)}" ${avatar === profile.setting_avatar ? 'selected' : ''}>${esc(ch.name)}</option>` : '';
+    }).join('');
+    const $root = $(`<div class="fm-popup">
+        <h3><i class="fa-solid fa-users"></i> ${esc(group.name)}</h3>
+        <label class="checkbox_label"><input type="checkbox" class="fm-g-loop" ${profile.loop ? 'checked' : ''}> The director runs this group's turns (sets Manual reply mode)</label>
+        <label>Setting card <small>(the world, rules and side characters; stays muted)</small>
+            <select class="text_pole fm-g-setting"><option value="">None</option>${options}</select></label>
+        <label>Replies <select class="text_pole fm-g-style">
+            <option value="short" ${profile.reply_style === 'short' ? 'selected' : ''}>Short by default</option>
+            <option value="long" ${profile.reply_style === 'long' ? 'selected' : ''}>Long</option></select></label>
+        <label>Media after each round <select class="text_pole fm-g-media">
+            <option value="director" ${profile.media_mode === 'director' ? 'selected' : ''}>The director decides</option>
+            <option value="every_turn" ${profile.media_mode === 'every_turn' ? 'selected' : ''}>Every round: an image</option>
+            <option value="off" ${profile.media_mode === 'off' ? 'selected' : ''}>Off (message buttons only)</option></select></label>
+        <small class="fm-hint">Everyone able to act does, then it's your turn. A round stops at 5 messages, or the number of characters if that's higher. Typing ends the round.</small>
+    </div>`);
+    const update = (patch) => setGroupProfile(group.id, patch).catch(err => toastr.error(err?.message || String(err), 'Media Studio'));
+    $root.on('change', '.fm-g-loop', function () { update({ loop: this.checked }); });
+    $root.on('change', '.fm-g-setting', function () { update({ setting_avatar: this.value }); });
+    $root.on('change', '.fm-g-style', function () { update({ reply_style: this.value }); });
+    $root.on('change', '.fm-g-media', function () { update({ media_mode: this.value }); });
+    await c.callGenericPopup($root, c.POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: false, leftAlign: true });
+}
 
 const MES_BUTTONS = '<div title="Media Studio: generate image" class="mes_button fm_mes_image fa-solid fa-image"></div>'
     + '<div title="Media Studio: generate video" class="mes_button fm_mes_video fa-solid fa-film"></div>';
@@ -526,80 +484,37 @@ function addMessageButtons() {
     $('#chat .mes .extraMesButtons').each(function () {
         if (!$(this).find('.fm_mes_image').length) $(this).prepend(MES_BUTTONS);
     });
-    $(document).on('click', '.fm_mes_image', function () {
-        generateImage(Number($(this).closest('.mes').attr('mesid')), { origin: 'manual' });
-    });
-    $(document).on('click', '.fm_mes_video', async function () {
-        const id = Number($(this).closest('.mes').attr('mesid'));
-        const prompts = await promptsForVideo(id);
-        generateVideo(id, { ...prompts, origin: 'manual' });
-    });
+    $(document).on('click', '.fm_mes_image', function () { generate('image', Number($(this).closest('.mes').attr('mesid'))); });
+    $(document).on('click', '.fm_mes_video', function () { generate('video', Number($(this).closest('.mes').attr('mesid'))); });
 }
 
-function refreshCharButton() {
+async function refreshCharButton() {
     const c = ctx();
     const editing = c.characterId !== undefined && c.characterId !== null && c.menuType !== 'create';
-    $('#fm_char_button').toggleClass('displayNone', !editing);
-}
-
-const galleryDeps = {
-    getCharMedia,
-    setCharMedia,
-    async loraStatus(chid) {
-        const ch = ctx().characters[chid];
-        try {
-            const r = await bridge('/media/lora-status', { method: 'POST', body: { names: [ch.name], character_prompts: { [ch.name]: sdPrompt(ch) } }, timeout: 15000 });
-            return !!r.characters?.[ch.name];
-        } catch {
-            return null;
-        }
-    },
-    async generateAvatar(chid, prompt) {
-        const s = settings();
-        const ch = ctx().characters[chid];
-        const res = await bridge('/media/image', {
-            method: 'POST',
-            body: { prompt, character_name: ch.name, character_prompts: { [ch.name]: sdPrompt(ch) }, visible_characters: [ch.name],
-                mode: 'lora', avatars: [], width: 832, height: 1216, steps: Number(s.steps), cfg_scale: Number(s.cfg) },
-            timeout: 0,
-        });
-        const b64 = res.images?.[0];
-        if (!b64) throw new Error('The bridge returned no image');
-        return await saveFile(b64, imageFormat(b64), ch.name, `avatar_${Date.now()}`);
-    },
-};
-
-// ---------------------------------------------------------------------------
-// Slash commands
-// ---------------------------------------------------------------------------
-
-function lastCharacterMessageId() {
-    const chat = ctx().chat;
-    for (let i = chat.length - 1; i >= 0; i--) if (!chat[i].is_user && !chat[i].is_system) return i;
-    return -1;
+    const $button = $('#fm_char_button').toggleClass('displayNone', !editing);
+    if (!editing || !c.characters[c.characterId]) return;
+    try {
+        const key = encodeURIComponent(charKey(c.characters[c.characterId]));
+        const { unrated } = await bridge(`/media/generations?person=${key}&limit=1`, { timeout: 10000 });
+        $button.toggleClass('fm-has-unrated', unrated > 0).attr('title', unrated ? `Media: ${unrated} unrated` : 'Media: references, appearance, gallery');
+    } catch { /* the dot is a convenience */ }
 }
 
 function registerSlashCommands() {
     const { SlashCommandParser, SlashCommand, SlashCommandArgument, ARGUMENT_TYPE } = ctx();
     if (!SlashCommandParser?.addCommandObject) return;
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'fmimage',
-        callback: async (_a, prompt) => { const id = lastCharacterMessageId(); if (id >= 0) await generateImage(id, { prompt: String(prompt || ''), origin: 'manual' }); return ''; },
-        unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional scene prompt', typeList: [ARGUMENT_TYPE.STRING] })],
-        helpString: 'Media Studio: generate an image for the last character message.',
-    }));
-    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
-        name: 'fmvideo',
-        callback: async (_a, motion) => {
+    const command = (name, kind, help) => SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name,
+        callback: async (_a, request) => {
             const id = lastCharacterMessageId();
-            if (id < 0) return '';
-            const prompts = motion ? { motion: String(motion) } : await promptsForVideo(id);
-            await generateVideo(id, { ...prompts, origin: 'manual' });
+            if (id >= 0) await generate(kind, id, { request: String(request || '') });
             return '';
         },
-        unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional motion prompt', typeList: [ARGUMENT_TYPE.STRING] })],
-        helpString: 'Media Studio: generate a video for the last character message (uses its image as the first frame).',
+        unnamedArgumentList: [SlashCommandArgument.fromProps({ description: 'optional request for the director', typeList: [ARGUMENT_TYPE.STRING] })],
+        helpString: help,
     }));
+    command('fmimage', 'image', 'Media Studio: generate an image for the last character message.');
+    command('fmvideo', 'video', 'Media Studio: generate a video for the last character message.');
 }
 
 // ---------------------------------------------------------------------------
@@ -617,23 +532,36 @@ jQuery(async () => {
     bindSettings();
 
     addMessageButtons();
-    $('.form_create_bottom_buttons_block').first().append('<div id="fm_char_button" class="menu_button fa-solid fa-images displayNone" title="Media gallery & avatars"></div>');
-    $('#fm_char_button').on('click', () => openCharacterMedia(ctx().characterId, galleryDeps));
+    $('.form_create_bottom_buttons_block').first().append('<div id="fm_char_button" class="menu_button fa-solid fa-images displayNone" title="Media: references, appearance, gallery"></div>');
+    $('#fm_char_button').on('click', () => openCharacterPanel(ctx().characterId));
+    $('.persona_controls_buttons_block').first().append('<div id="fm_persona_button" class="menu_button fa-solid fa-images" title="Media: references, appearance, gallery"></div>');
+    $('#fm_persona_button').on('click', openPersonaPanel);
+    $('#rm_group_buttons').append('<div id="fm_group_button" class="menu_button fa-solid fa-clapperboard" title="Media Studio: director and Setting card"></div>');
+    $('#fm_group_button').on('click', openGroupPanel);
     refreshCharButton();
 
-    c.eventSource.on(et.MESSAGE_RECEIVED, (id, type) => onMessageReceived(id, type));
+    configureJobs({
+        counted(kind) { usage()[kind]++; save(); },
+        note: noteForCharacter,
+    });
+    initGroups({ onRoundEnd });
+
+    c.eventSource.on(et.MESSAGE_RECEIVED, onMessageReceived);
     c.eventSource.on(et.MESSAGE_SENT, () => { noteArmed = true; });
+    c.eventSource.on(et.MESSAGE_SWIPED, () => track('swiped'));
+    c.eventSource.on(et.MESSAGE_DELETED, () => track('message_deleted'));
     c.eventSource.on(et.CHAT_CHANGED, () => {
         ctx().setExtensionPrompt(NOTE_KEY, '', 1, 1);
         noteArmed = false;
         refreshCharButton();
+        resumeOpenJobs();
     });
     c.eventSource.on(et.CHARACTER_EDITOR_OPENED, refreshCharButton);
 
     registerSlashCommands();
     await refreshBridgeStatus();
-    loadHelperModels();
+    resumeOpenJobs();
 
-    globalThis.MediaStudio = { settings, generateImage, generateVideo, onMessageReceived, getCharMedia, setCharMedia, AVATAR_SLOTS };
+    globalThis.MediaStudio = { settings, generate, onMessageReceived, resumeOpenJobs };
     console.log(TAG, 'loaded');
 });
