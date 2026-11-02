@@ -76,7 +76,8 @@ class Sogni(Provider):
     async def _client(self, network: str, **kwargs: Any) -> Any:
         from sogni_client import SogniClient  # imported lazily: optional dependency
 
-        return await SogniClient.create(api_key=MediaConfig.SOGNI_API_KEY, app_id=MediaConfig.SOGNI_APP_ID,
+        # A second socket on one app id silently drops the first, and that job then hangs.
+        return await SogniClient.create(api_key=MediaConfig.SOGNI_API_KEY, app_id=f"{MediaConfig.SOGNI_APP_ID}-{uuid.uuid4().hex[:8]}",
                                         network=network, **kwargs)
 
     async def _reference_link(self, client: Any, asset: Any) -> str:
@@ -86,7 +87,7 @@ class Sogni(Provider):
             return handle
         ids = {"imageId": uuid.uuid4().hex, "jobId": uuid.uuid4().hex, "type": "referenceImage"}
         upload = await client.projects.upload_url({**ids, "contentType": "image/jpeg"})
-        await client.rest.put_bytes(upload, asset.read(), content_type="image/jpeg")
+        await client.api_client.rest.put_bytes(upload, asset.read(), content_type="image/jpeg")
         link = await client.projects.download_url(ids)
         db.save_remote(asset.id, self.name, link, int(time.time()) + LINK_LIFETIME)
         return link

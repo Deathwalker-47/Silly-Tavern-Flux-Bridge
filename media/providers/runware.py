@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -14,12 +14,20 @@ from ..config import MediaConfig
 from .base import Provider, RenderRequest, RenderResult, download, send, sniff_mime
 
 
+LORA_READY_WAIT = 300       # seconds: a LoRA uploaded moments ago is still processing
+LORA_READY_POLL = 10
+
+
 def describe_errors(errors: List[Dict[str, Any]]) -> str:
     first = errors[0] if errors else {}
     if first.get("code") == "unsupportedLoraModel":
         return (f"Runware refused a LoRA built for {first.get('loraModelArchitecture', 'another model')} "
                 f"on a {first.get('baseModelArchitecture', 'different')} model. {first.get('message', '')}")
     return first.get("message") or str(first)[:300]
+
+
+def lora_processing(errors: Optional[List[Dict[str, Any]]]) -> bool:
+    return bool(errors) and "not ready for inference" in str(errors[0].get("message"))
 
 
 class Runware(Provider):
@@ -58,6 +66,23 @@ class Runware(Provider):
             task["seed"] = req.seed
         return task
 
+    async def render(self, task: Dict[str, Any], headers: Dict[str, str]) -> Tuple[httpx.Response, Dict[str, Any]]:
+        """The first render after an upload is refused until Runware finishes processing the LoRA."""
+        waited = 0
+        async with httpx.AsyncClient(timeout=180) as client:
+            while True:
+                resp = await send(client, "POST", MediaConfig.RUNWARE_ENDPOINT, json=[task], headers=headers)
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    raise RuntimeError(f"Runware HTTP {resp.status_code}: {resp.text[:200]}")
+                if not lora_processing(payload.get("errors")) or waited >= LORA_READY_WAIT:
+                    if waited:
+                        telemetry.record("loras", "waited_ready", ok=not payload.get("errors"), provider=self.name, seconds=waited)
+                    return resp, payload
+                await asyncio.sleep(LORA_READY_POLL)
+                waited += LORA_READY_POLL
+
     async def submit(self, req: RenderRequest) -> str:
         with telemetry.step("loras", "resolve", provider=self.name, count=len(req.loras)) as facts:
             # In a thread: uploads and the model check are blocking HTTP calls (up to 60 s).
@@ -71,12 +96,7 @@ class Runware(Provider):
         task = self.build_task(req, resolved, task_uuid)
         req.params = {k: v for k, v in task.items() if k not in ("taskUUID", "taskType")}
         headers = {"Authorization": f"Bearer {MediaConfig.RUNWARE_API_KEY}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await send(client, "POST", MediaConfig.RUNWARE_ENDPOINT, json=[task], headers=headers)
-        try:
-            payload = resp.json()
-        except ValueError:
-            raise RuntimeError(f"Runware HTTP {resp.status_code}: {resp.text[:200]}")
+        resp, payload = await self.render(task, headers)
         if payload.get("errors"):           # no retry: a refused LoRA would only fail the same way
             raise RuntimeError(f"Runware: {describe_errors(payload['errors'])}")
         item = (payload.get("data") or [{}])[0]

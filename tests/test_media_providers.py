@@ -16,6 +16,7 @@ from media.providers.mock import Mock
 from media.providers.nanogpt import MAX_REQUEST, NanoGPT
 from media.providers.pixeldojo import BUILDERS, PixelDojo, first_output_url
 from media.providers.replicate import Replicate, prediction_output
+from media.providers import runware as runware_module
 from media.providers.runware import Runware, describe_errors
 from media.providers.sogni import CONSENT_PAGE, Sogni
 
@@ -219,6 +220,37 @@ class RunwareTests(ProviderCase):
         self.assertEqual(result.cost_usd, 0.0129)
         self.assertEqual(req.params["model"], "rundiffusion:200@100")
 
+    PROCESSING = FakeResponse(400, {"errors": [{"message": "The model specified in the 'lora.model' parameter is not ready for inference yet."}]})
+    RENDERED = FakeResponse(200, {"data": [{"imageURL": "https://out/1.jpg", "cost": 0.01}]})
+
+    def render_with(self, replies, wait):
+        http = FakeHTTP([("runware", replies), ("https://out", FakeResponse(200, content=small_jpeg()))])
+        lora_item = {"url": "https://hf/a.safetensors", "weight": 1.0}
+        with unittest.mock.patch.object(MediaConfig, "RUNWARE_ENDPOINT", "https://runware/v1"), \
+             unittest.mock.patch.object(loras, "_resolve", lambda items, key, arch: [{"lora": "a@1", "weight": 1.0}]), \
+             unittest.mock.patch.object(runware_module, "LORA_READY_POLL", 0), \
+             unittest.mock.patch.object(runware_module, "LORA_READY_WAIT", wait), \
+             http.patch():
+            try:
+                run(Runware().submit(req_for("image", "runware", "flux-lora", loras=[lora_item], aspect_ratio="9:16")))
+                return None, sum("runware" in c["url"] for c in http.calls)
+            except RuntimeError as e:
+                return str(e), sum("runware" in c["url"] for c in http.calls)
+
+    def test_a_lora_still_processing_is_waited_for(self):
+        self.assertEqual(self.render_with([self.PROCESSING, self.PROCESSING, self.RENDERED], 300), (None, 3))
+
+    def test_a_lora_that_never_finishes_processing_fails(self):
+        error, calls = self.render_with([self.PROCESSING, self.RENDERED], 0)
+        self.assertIn("not ready for inference", error)
+        self.assertEqual(calls, 1)
+
+    def test_a_refused_lora_is_not_retried(self):
+        refused = FakeResponse(400, {"errors": [{"message": "Invalid value for 'lora.model'"}]})
+        error, calls = self.render_with([refused, self.RENDERED], 300)
+        self.assertIn("Invalid value", error)
+        self.assertEqual(calls, 1)
+
     def test_a_lora_for_another_architecture_explains_itself(self):
         text = describe_errors([{"code": "unsupportedLoraModel", "loraModelArchitecture": "flux1d", "baseModelArchitecture": "z_image"}])
         self.assertIn("flux1d", text)
@@ -283,7 +315,7 @@ def fake_sdk(project):
     class Client:
         def __init__(self):
             self.projects = Projects()
-            self.rest = types.SimpleNamespace(put_bytes=self._put)
+            self.api_client = types.SimpleNamespace(rest=types.SimpleNamespace(put_bytes=self._put))
             self.account = types.SimpleNamespace(account_balance=self._balance)
 
         async def _put(self, *_a, **_kw):
@@ -293,7 +325,8 @@ def fake_sdk(project):
             return {"spark": {"net": 42.0}}
 
         @classmethod
-        async def create(cls, **_kw):
+        async def create(cls, **kw):
+            made.append({"app_id": kw.get("app_id")})
             return cls()
 
         async def __aenter__(self):
@@ -316,7 +349,15 @@ class SogniTests(ProviderCase):
         req = req_for(*route, **kw)
         with sdk:
             run(sogni.submit(req))
-        return made[0], req
+        return next(m for m in made if "app_id" not in m), req
+
+    def test_every_connection_gets_its_own_app_id(self):
+        made, sdk = fake_sdk(FakeProject())
+        sogni = Sogni()
+        with sdk:
+            run(sogni._client("fast"))
+            run(sogni._client("fast"))
+        self.assertEqual(len({m["app_id"] for m in made}), 2)
 
     def test_h3_reference_sends_bytes_and_context_images(self):
         one, two = self.asset(), self.asset(900, 900)
@@ -398,7 +439,7 @@ class SogniTests(ProviderCase):
         made, sdk = fake_sdk(FakeProject())
         with sdk:
             run(Sogni().cancel("old-project"))
-        self.assertEqual(made, [{"cancelled": "old-project"}])
+        self.assertIn({"cancelled": "old-project"}, made)
 
     def test_balance(self):
         _made, sdk = fake_sdk(FakeProject())

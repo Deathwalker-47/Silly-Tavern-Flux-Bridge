@@ -14,9 +14,10 @@ in the default order.
 
 It also includes:
 - Media Studio: a SillyTavern extension (in `silly-tavern-pluggin/`) where
-  characters send photos and videos in chat. Video runs on Runware, NanoGPT,
-  Sogni or Replicate; a helper LLM decides when to send what
-- A helper LLM (NanoGPT, OpenAI-compatible) for the media director, prompt
+  characters send photos and videos in chat, on Runware, NanoGPT, Sogni,
+  Replicate or PixelDojo. A director LLM decides what to send and writes the
+  prompt for each model
+- A helper LLM (NanoGPT, OpenAI-compatible) for the director, prompt
   summarization and TavernVoice's voice tags
 - Keyword-based LoRA matching from `master_lora_dict.json`
 - FLUX.1 Kontext instruction-based image editing (`POST /edit`, browser UI at `/edit-ui`)
@@ -76,13 +77,24 @@ API ENDPOINTS
 - GET  /immich/assets/{id}/thumbnail   thumbnail proxy
 - GET  /immich/assets/{id}/original    original-file proxy
 - GET  /images/{id}              serves generated images by id
-- GET  /media/capabilities       Media Studio menus: providers, models, helper
-- POST /media/image              image for a chat message (LoRA or avatar mode)
+- GET  /media/capabilities       Media Studio menus: providers, models, modes, helper
+- GET  /media/balances           provider balances
+- POST /assets                   upload an image (window check, metadata stripped)
 - POST /media/lora-status        which characters have a LoRA
-- POST /video/generate           start a video job (returns job_id)
-- GET  /video/jobs/{id}          job progress; video_path when done
-- GET  /videos/{id}              serves finished videos (MP4, streams with Range)
-- POST /helper/decide            media director: should the character send something?
+- POST /media/jobs               start an image or video job (returns job_id)
+- GET  /media/jobs               a chat's open jobs
+- GET  /media/jobs/{id}          job progress
+- POST /media/jobs/{id}/cancel   stop a job and its remote task
+- POST /media/jobs/{id}/ack      the extension saved the file
+- GET  /media/files/{id}         serves finished files (streams with Range)
+- GET  /media/generations        gallery rows, by person and kind
+- PATCH /media/generations/{id}  rating and comment
+- GET  /media/generations/{id}/trace   every pipeline step of one generation
+- POST /media/routes/test        run your prompt on a route at its lowest setting
+- PUT  /media/routes/{provider}/{model}   pass or fail a route
+- GET  /media/insights           the pipeline report (/export for raw data)
+- POST /director/decide          should the character send something?
+- POST /director/next-speaker    group chats: who acts next
 - POST /helper/voice-tags        Grok speech tags for TavernVoice
 - GET  /helper/models            helper model list (for the model menus)
 - POST /v1/images/generations    OpenAI-compatible image generation
@@ -200,7 +212,8 @@ FILES
 --------------------------------------------------------------------------------
 
 - flux_lora_bridge.py        the FastAPI app
-- media_studio.py            video providers and catalog, video jobs, helper LLM
+- media/                     Media Studio's bridge side: catalog, director and its
+                             guides, providers, jobs, pipelines, telemetry, routes
 - silly-tavern-pluggin/      Media Studio, the SillyTavern extension
 - dev/                       local mocks, for testing without spending credits
 - tests/                     unit tests (python -m pytest tests)
@@ -220,10 +233,11 @@ Read `SILLYTAVERN_INTEGRATION.md` for full setup and troubleshooting.
 MEDIA STUDIO (SILLYTAVERN EXTENSION)
 --------------------------------------------------------------------------------
 
-Characters send photos and short videos in chat. The helper LLM decides when to
-send something (or images come every turn), every message gets a video button,
-and each character has a gallery with up to 5 avatar images. Characters without
-a LoRA get images from their avatars (Kontext) or plain txt2img.
+Characters send photos and short videos in chat. The director (the helper LLM)
+decides when to send something, what's in the shot and how to write the prompt
+for the chosen model. Jobs run on the bridge, so they survive a page reload, a
+locked phone or a bridge restart, and the result lands on its message when you
+come back.
 
 Install: copy `silly-tavern-pluggin/` into your SillyTavern user's extension
 folder (any folder name works), then reload SillyTavern:
@@ -238,25 +252,53 @@ Then open Extensions -> Media Studio (Flux Bridge):
 - Bridge URL: the bridge's address as your browser sees it (empty = the SD
   WebUI URL from Image Generation)
 - Bridge token: the EDIT_API_TOKEN value, if set
-- Video: provider, model, variant, duration and resolution. "Sogni queue"
-  (Sogni only) picks fast (billed) or relaxed (free, can queue for an hour or
-  more); empty uses SOGNI_NETWORK
-- Helper LLM: the media director's model (empty = HELPER_MODEL)
+- Images and Video: provider, model and, for video, Reference, First frame or
+  First + last frame. Each mode says what it's for
+- Auto media: off, the director decides, or an image every turn, with cooldowns
+  and daily limits
+- Test this route: runs your own prompt on the selected model at the lowest
+  setting. Pass keeps the route. Fail hides it until you restore it
+- Pipeline report: what worked, what's slow, what it cost and what to change
 
-Keys live only in the bridge's .env, never in the extension. Missing keys just
-hide that provider:
+Each character and persona has a Media panel:
+- References: five tagged slots (Face 1, Face 2, Full body, Portrait, Naked).
+  Nothing goes to a provider until the confirmation box is ticked
+- Appearance: age (required, 18 or over) and a description that wins over
+  anything in the chat
+- Gallery: every generation with its settings, cost, a 1-5 rating, a comment
+  and the full pipeline steps
 
-  Runware    RUNWARE_API_KEY      LTX-2.5 Fast, Wan 2.7, Seedance 1.5 / 2.0, MiniMax H3
-  NanoGPT    NANOGPT_API_KEY      LTX-2.3, Wan 2.2 / 2.7, Seedance 1.5 / 2.0, MiniMax H3
-                                  ("Spicy" variants first)
-  Sogni      SOGNI_API_KEY        LTX-2.3 10Eros, Wan 2.2, Seedance 2.0, MiniMax H3
-                                  (H3 gets the VBVR LoRA, SOGNI_H3_LORA)
-  Replicate  REPLICATE_API_TOKEN  LTX-2.3 Fast, Wan 2.2 / 2.7, Seedance 1.5 / 2.0, MiniMax H3
-  Helper     HELPER_API_KEY       any NanoGPT chat model (HELPER_MODEL)
+Group chats use native SillyTavern groups in Manual reply mode. Open a group and
+press the clapperboard button: the director picks who acts until it's your turn,
+one normal card can be the group's Setting card (world, rules, side characters),
+and each round makes at most one media decision. A round ends when it's your
+turn, at 5 messages or the number of characters, when you press Stop, or when
+you start typing.
 
-Safety checkers are switched off wherever a provider has a switch. Runware no
-longer offers LTX-2.3: every LTX-2.3 job failed there with a bare
-"inferenceError" (Oct 2026). Use NanoGPT, Sogni or Replicate for LTX-2.3.
+Keys live in the bridge's .env, never in the extension. A missing key hides
+that provider:
+
+  Runware    RUNWARE_API_KEY      Flux Dev + LoRA, Juggernaut Z + LoRA
+  NanoGPT    NANOGPT_API_KEY      Seedream 4.5, Qwen Edit, The Best Option, video,
+                                  and the director (HELPER_MODEL, DIRECTOR_MODEL)
+  Sogni      SOGNI_API_KEY        Z-Image, Qwen Edit, MiniMax H3 Reference, video
+  Replicate  REPLICATE_API_TOKEN  Flux Dev + LoRA (backup)
+  PixelDojo  PIXELDOJO_API_KEY    Seedream 4.5, The Best Option, video (billed in
+                                  credits, the most expensive route)
+
+Safety checkers are switched off wherever a provider has a switch. The bridge
+blocks one thing itself: sexual content involving minors. Everyone in a shot
+needs an age of 18 or over.
+
+Everything the pipeline does is recorded in the bridge's own database
+(`data/media.db`): each step, what it cost, how long it took and how you rated
+the result. Read it from the Pipeline report button, or:
+
+```bash
+python dev/insights.py --days 30          # routes, ratings, slow steps, suggestions
+python dev/insights.py --trace <job id>   # every step of one generation
+python dev/insights.py --export out.jsonl
+```
 
 TavernVoice (https://github.com/Deathwalker-47/TavernVoice) uses the same
 bridge for its "voice director" (POST /helper/voice-tags).
@@ -278,9 +320,10 @@ Then:
   edits) require it, and anyone can reach a public bridge. Paste the same
   token into Media Studio and TavernVoice.
 - Set PUBLIC_BASE_URL to that HTTPS address, so image URLs resolve.
-- Videos stay on the bridge for VIDEO_STORE_TTL seconds. Media Studio
-  downloads each finished video and saves it in SillyTavern's own files, so
-  chat playback on a phone or PC is served by SillyTavern.
+- Media Studio saves each finished file in SillyTavern's own files, so chat
+  playback on a phone or PC is served by SillyTavern. The bridge deletes its
+  copy MEDIA_FILE_TTL_DAYS after that, or MEDIA_UNSAVED_TTL_DAYS if it was
+  never saved. Keep `data/` on the server: it holds the job and rating history.
 - Keep it running as a service (systemd, pm2 or screen):
     pip install -r requirements.txt     # includes sogni-client
     python flux_lora_bridge.py
@@ -289,8 +332,8 @@ Then:
 TESTING WITHOUT SPENDING CREDITS
 --------------------------------------------------------------------------------
 
-  python dev/mock_providers.py     # terminal 1: fake Runware and helper LLM
+  python dev/mock_providers.py     # terminal 1: fake providers and helper LLM
   python dev/run_local.py          # terminal 2: bridge on :7861 using the mocks
 
-The "mock" video provider returns a bundled 2 s clip. Unit tests:
+The "mock" provider returns local images and a bundled 2 s clip. Unit tests:
   python -m pytest tests
