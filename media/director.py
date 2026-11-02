@@ -42,7 +42,8 @@ Reply with one JSON object only.
 11. "concept_loras": up to 3 keys from the list that truly fit what is visible. Leave it empty if none fit.
 12. "caption": a short line the character might text along with it, or empty.
 13. If "user_request" is present, the user asked for exactly that. Follow it.
-14. If "call" is present, the user is on a phone call with the person named in "call.with", and they are in different places. That person is the main character, even on a card that names several people, and they are the one taking the photo or video: a selfie, a mirror shot, or what they point the camera at. The user is not in the shot and "pov" is false. Describe that person from their Appearance text when they have an entry in "characters", otherwise from the story."""
+14. If "call" is present, the user is on a phone call with the person named in "call.with", and they are in different places. That person is the main character, even on a card that names several people, and they are the one taking the photo or video: a selfie, a mirror shot, or what they point the camera at. The user is not in the shot and "pov" is false. Describe that person from their Appearance text when they have an entry in "characters", otherwise from the story.
+15. An entry with "side_of" is a side character inside that story card, with their own Appearance and references. The story card's own entry stays the default: use it for any shot that doesn't feature one of its side characters. When a side character is physically present in this moment, or is the one on the call, include them by their own key and name them in {{ref:Name:slot}} by their own name. Every reference image of each person you include is sent to the model, and nobody else's, so include the story card's own entry alongside them only when the story card's own character is in the shot too. Never describe a side character with the story card's Appearance, or the story card's character with a side character's."""
 
 PLAN_FIELDS = {
     "blocked": {"type": "boolean"}, "block_reason": {"type": "string"}, "main_character": {"type": "string"},
@@ -125,8 +126,11 @@ class DirectorInput:
         def person(p: Person) -> Dict[str, Any]:
             lora = loras.character_lora(p.name, p.sd_prompt, arch)
             shapes = {slot: text for slot, key in p.refs.items() if (text := assets.shape_text(key))}
-            return {"key": p.key, "name": p.name, "age": p.age, "appearance": p.appearance, "slots": list(p.refs),
-                    "reference_shapes": shapes, "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
+            entry = {"key": p.key, "name": p.name, "age": p.age, "appearance": p.appearance, "slots": list(p.refs),
+                     "reference_shapes": shapes, "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
+            if p.side_of:
+                entry["side_of"] = p.side_of
+            return entry
 
         out["characters"] = [person(p) for p in self.characters]
         if self.user:

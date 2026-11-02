@@ -119,6 +119,24 @@ class InputTests(unittest.TestCase):
         chosen = ctx.people_by_key(["c:maya", "Maya", "lena", "nobody", "p:sam"])
         self.assertEqual([p.name for p in chosen], ["Maya", "Lena", "Sam"])
 
+    def test_side_characters_reach_the_director_tied_to_their_story_card(self):
+        inn = {"key": "char:inn.png", "name": "Seaside Inn", "age": 30, "refs": {"face_1": "c1"}}
+        bram = {"key": "char:inn.png#side:b1", "name": "Bram", "age": 41, "appearance": "broad, grey beard",
+                "refs": {"face_1": "d1"}, "side_of": "Seaside Inn"}
+        public = DirectorInput({"characters": [inn, bram]}).public(catalog.find("image", "nanogpt", "seedream-4.5"))
+        self.assertNotIn("side_of", public["characters"][0])
+        self.assertEqual(public["characters"][1]["side_of"], "Seaside Inn")
+        self.assertEqual(public["characters"][1]["slots"], ["face_1"])
+        self.assertIn('"side_of"', director.DIRECTOR_RULES)
+
+    def test_a_side_characters_shots_also_land_in_the_story_cards_gallery(self):
+        people = [Person.from_context({"key": "char:inn.png#side:b1", "name": "Bram", "side_of": "Seaside Inn"}, "character"),
+                  Person.from_context({"key": "char:inn.png#side:n2", "name": "Nadia", "side_of": "Seaside Inn"}, "character"),
+                  Person.from_context(MAYA, "character")]
+        self.assertEqual(pipelines.gallery_people(people), [
+            {"key": "char:inn.png#side:b1", "role": "character"}, {"key": "char:inn.png", "role": "story"},
+            {"key": "char:inn.png#side:n2", "role": "character"}, {"key": "c:maya", "role": "character"}])
+
     def test_context_is_passed_through_whole_with_no_cuts(self):
         long_reply = "word " * 5000
         option = catalog.find("image", "nanogpt", "seedream-4.5")

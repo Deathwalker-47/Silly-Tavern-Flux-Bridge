@@ -9,7 +9,7 @@ import { characterOf, currentGroup, directorContext, history, sdPrompt } from '.
 import { groupProfile, initGroups, loopActive, setGroupProfile } from './src/groups.js';
 import { configureJobs, resumeOpenJobs, runDetached, runJob } from './src/jobs.js';
 import { openMediaPanel } from './src/media-panel.js';
-import { charKey, getCharProfile, getPersonaProfile, personaId, personaName, setCharProfile, setPersonaProfile } from './src/profile.js';
+import { addSidePerson, charKey, getCharProfile, getPersonaProfile, getSideProfile, personaId, personaName, removeSidePerson, setCharProfile, setPersonaProfile, setSideProfile, sideKey, sideList } from './src/profile.js';
 import { messageMedia, messagesSinceMedia } from './src/store.js';
 import { track } from './src/telemetry.js';
 import { fixTouchAutocomplete } from './src/touch-autocomplete.js';
@@ -584,12 +584,25 @@ function bindSettings() {
 // Panels and buttons
 // ---------------------------------------------------------------------------
 
+/** People TavernVoice found in this card, offered as side characters. */
+const voiceCast = (char) => (char?.data?.extensions?.tavern_voice?.cast || []).map(p => String(p?.name || '').trim()).filter(Boolean);
+
 function openCharacterPanel(chid, tab) {
     const char = ctx().characters[chid];
     if (!char) return;
     return openMediaPanel({
         name: char.name, key: charKey(char), folder: char.name, sdPrompt: sdPrompt(char), tab,
         load: () => getCharProfile(chid), save: patch => setCharProfile(chid, patch),
+        side: {
+            list: async () => sideList(await getCharProfile(chid)).map(p => ({ id: p.id, name: p.name || '' })),
+            add: name => addSidePerson(chid, name),
+            remove: id => removeSidePerson(chid, id),
+            suggestions: () => voiceCast(ctx().characters[chid]),
+            who: (id, name) => ({
+                id, name, key: sideKey(char, id), folder: char.name,
+                load: () => getSideProfile(chid, id), save: patch => setSideProfile(chid, id, patch),
+            }),
+        },
     });
 }
 

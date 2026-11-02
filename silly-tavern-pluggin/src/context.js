@@ -1,6 +1,6 @@
 // Everything the director reads, raw. There are no length limits: reply is never cut.
 
-import { charKey, ensureAssets, getCharProfile, getPersonaProfile, personaId, personaName, personForContext, setCharProfile, setPersonaProfile } from './profile.js';
+import { charKey, ensureAssets, getCharProfile, getPersonaProfile, migrateProfile, personaId, personaName, personForContext, setCharProfile, setPersonaProfile, sideKey, sideList } from './profile.js';
 
 const ctx = () => SillyTavern.getContext();
 
@@ -35,15 +35,19 @@ export function settingCardText(groupProfile) {
     return card ? [card.description, card.scenario].filter(Boolean).join('\n\n') : '';
 }
 
-async function profileEntry(chid) {
+/** The card as one person, then each named side character in it as their own. The director picks who is in the shot. */
+async function profileEntries(chid) {
     const c = ctx();
     const char = c.characters[chid];
     let profile = await getCharProfile(chid);
     profile = await ensureAssets(profile, patch => setCharProfile(chid, patch)).catch(() => profile);
-    return personForContext(profile, charKey(char), char.name, sdPrompt(char));
+    const side = sideList(profile).filter(p => String(p.name || '').trim())
+        .map(p => ({ ...personForContext(migrateProfile(p), sideKey(char, p.id), String(p.name).trim()), side_of: char.name }));
+    return [personForContext(profile, charKey(char), char.name, sdPrompt(char)), ...side];
 }
 
-/** Who can be in the shot: the speaker, then the group's other members. The Setting card isn't a person. */
+/** Who can be in the shot: the speaker, then the group's other members, each with their side characters.
+ *  The Setting card isn't a person, but the side characters it holds are. */
 async function charactersInScene(messageId, groupProfile) {
     const c = ctx();
     const { chid, char } = characterOf(c.chat[messageId]);
@@ -55,7 +59,10 @@ async function charactersInScene(messageId, groupProfile) {
         const idx = c.characters.findIndex(ch => ch.avatar === avatar);
         if (idx >= 0 && !ids.includes(idx)) ids.push(idx);
     }
-    return Promise.all(ids.map(profileEntry));
+    const entries = (await Promise.all(ids.map(profileEntries))).flat();
+    const setting = groupProfile?.setting_avatar ? c.characters.findIndex(ch => ch.avatar === groupProfile.setting_avatar) : -1;
+    if (setting >= 0 && !ids.includes(setting)) entries.push(...(await profileEntries(setting)).slice(1));
+    return entries;
 }
 
 export async function personaForContext() {

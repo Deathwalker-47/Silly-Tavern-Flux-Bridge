@@ -1,4 +1,5 @@
-// One popup for a character or persona: References, Appearance, Gallery.
+// One popup for a character or persona: References, Appearance, Gallery. A story card's
+// popup also switches between the card and its side characters, each with their own.
 
 import { bridge, bridgeBase, cachedCapabilities } from './bridge.js';
 import { uploadAsset, windowProblem } from './assets.js';
@@ -61,17 +62,19 @@ function traceText(trace) {
 }
 
 /**
- * @param {object} who
- * @param {string} who.name
- * @param {string} who.key            person key, as the director and gallery use it
- * @param {string} who.folder         SillyTavern image folder
- * @param {() => Promise<object>} who.load
- * @param {(patch) => Promise<object>} who.save
- * @param {string} [who.sdPrompt]     for a character: finds its LoRA
- * @param {string} [who.tab]
+ * @param {object} card
+ * @param {string} card.name
+ * @param {string} card.key            person key, as the director and gallery use it
+ * @param {string} card.folder         SillyTavern image folder
+ * @param {() => Promise<object>} card.load
+ * @param {(patch) => Promise<object>} card.save
+ * @param {string} [card.sdPrompt]     for a character: finds its LoRA
+ * @param {string} [card.tab]
+ * @param {object} [card.side]         a character's side characters: list, add, remove, who(id, name), suggestions
  */
-export async function openMediaPanel(who) {
+export async function openMediaPanel(card) {
     const c = ctx();
+    let who = card;                    // the card, or the side character being edited
     let profile = await who.load();
     let page = 0;
     let filter = '';
@@ -79,13 +82,19 @@ export async function openMediaPanel(who) {
     const $root = $(`
         <div class="fm-popup">
             <div class="fm-popup-head">
-                <h3><i class="fa-solid fa-images"></i> ${esc(who.name)}</h3>
+                <h3><i class="fa-solid fa-images"></i> <span class="fm-who">${esc(who.name)}</span></h3>
                 <div class="fm-tabs">
                     <div class="menu_button fm-tab" data-tab="refs">References</div>
                     <div class="menu_button fm-tab" data-tab="appearance">Appearance</div>
                     <div class="menu_button fm-tab" data-tab="gallery">Gallery</div>
                 </div>
             </div>
+            <div class="fm-people fm-hidden">
+                <select class="text_pole fm-person" title="Side characters"></select>
+                <input class="text_pole fm-person-name fm-hidden" type="text" placeholder="Name">
+                <div class="menu_button fa-solid fa-trash fm-person-remove fm-hidden" title="Remove this side character and their references"></div>
+            </div>
+            <small class="fm-hint fm-people-hint fm-hidden"></small>
             <div class="fm-pane" data-pane="refs">
                 <div class="fm-lora-status"></div>
                 <div class="fm-migrated fm-hidden"></div>
@@ -114,6 +123,14 @@ export async function openMediaPanel(who) {
             <input type="file" class="fm-file" accept="image/jpeg,image/png,image/webp,image/heic,image/heif" hidden>
         </div>`);
     const $file = $root.find('.fm-file');
+    let uploadWho = who;
+
+    /** Saves to whoever was showing when the edit began, even if the dropdown has moved on since. */
+    const save = async (patch, target = who) => {
+        const next = await target.save(patch);
+        if (target === who) profile = next;
+        return next;
+    };
 
     const renderSlots = () => {
         $root.find('.fm-avatars').html(SLOTS.map((slot) => {
@@ -132,26 +149,28 @@ export async function openMediaPanel(who) {
         }).join(''));
     };
 
-    const setSlot = async (slot, ref) => {
-        profile = await who.save({ refs: { ...profile.refs, [slot]: ref } });
-        renderSlots();
+    const setSlot = async (slot, ref, target = who) => {
+        await save(current => ({ refs: { ...current.refs, [slot]: ref } }), target);
+        if (target === who) renderSlots();
     };
 
-    const saveFromBlob = async (slot, blob) => {
+    const saveFromBlob = async (slot, blob, target = who) => {
         const asset = await uploadAsset(blob, 'reference');
         const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-        const url = await saveFile(await blobToBase64(blob), ext, who.folder, `ref_${slot}_${Date.now()}`);
-        await setSlot(slot, { url, asset });
+        const url = await saveFile(await blobToBase64(blob), ext, target.folder, `ref_${slot}_${Date.now()}`);
+        await setSlot(slot, { url, asset }, target);
     };
 
     const renderGallery = async (append = false) => {
+        const asked = who;
         const $list = $root.find('.fm-gens');
         if (!append) {
             page = 0;
             $list.html('<i>Loading…</i>');
         }
         try {
-            const { generations } = await bridge(`/media/generations?person=${encodeURIComponent(who.key)}&kind=${filter}&limit=30&offset=${page * 30}`, { timeout: 20000 });
+            const { generations } = await bridge(`/media/generations?person=${encodeURIComponent(asked.key)}&kind=${filter}&limit=30&offset=${page * 30}`, { timeout: 20000 });
+            if (asked !== who) return;
             if (!append) $list.empty();
             if (!generations.length && !append) $list.html('<i>Nothing generated yet. Every image and video lands here with its settings.</i>');
             $list.append(generations.map(galleryItem).join(''));
@@ -169,9 +188,91 @@ export async function openMediaPanel(who) {
 
     const patchGeneration = (id, body) => bridge(`/media/generations/${id}`, { method: 'PATCH', body, timeout: 15000 });
 
+    const loraStatus = () => {
+        const $status = $root.find('.fm-lora-status').empty();
+        if (!who.key.startsWith('char:')) return;
+        const asked = who;
+        bridge('/media/lora-status', { method: 'POST', body: { names: [who.name], character_prompts: { [who.name]: who.sdPrompt || '' } }, timeout: 15000 })
+            .then((r) => {
+                if (asked !== who) return;
+                $status.html(r.characters?.[asked.name]
+                    ? '<i class="fa-solid fa-circle-check fm-ok"></i> This character has a LoRA. Flux images use it.'
+                    : '<i class="fa-solid fa-circle-info fm-warn"></i> No LoRA for this character. Flux switches to Seedream 4.5 with these references.');
+            })
+            .catch(() => asked === who && $status.text('Could not reach the bridge to check for a LoRA.'));
+    };
+
+    /** The dropdown: the card first, then its side characters, then ways to add one. */
+    const renderPeople = async () => {
+        if (!card.side) return;
+        const people = await card.side.list();
+        const taken = new Set(people.map(p => p.name.toLowerCase()));
+        const cast = card.side.suggestions().filter(name => !taken.has(name.toLowerCase()));
+        $root.find('.fm-person').html([
+            `<option value="">${esc(card.name)} (the story card, used by default)</option>`,
+            ...people.map(p => `<option value="${esc(p.id)}">${esc(p.name || 'Unnamed')}</option>`),
+            ...cast.map(name => `<option value="+cast" data-name="${esc(name)}">+ Add ${esc(name)} from the voice cast</option>`),
+            '<option value="+new">+ Add a side character</option>',
+        ].join('')).val(who.id || '');
+        $root.find('.fm-people').removeClass('fm-hidden');
+    };
+
+    const fillPerson = () => {
+        const side = !!who.id;
+        $root.find('.fm-who').text(who.name);
+        $root.find('.fm-person-name').toggleClass('fm-hidden', !side).val(side ? who.name : '');
+        $root.find('.fm-person-remove').toggleClass('fm-hidden', !side);
+        $root.find('.fm-people-hint').toggleClass('fm-hidden', !card.side).text(side
+            ? `${who.name}'s references are sent only when the director puts ${who.name} in the scene. Set ${who.name}'s age in Appearance.`
+            : 'The story card\'s own references are the default. Add side characters to give other people in the story their own.');
+        $root.find('.fm-confirm').prop('checked', !!profile.fictional_confirmed);
+        $root.find('.fm-age').val(profile.appearance?.age || '');
+        $root.find('.fm-appearance').val(profile.appearance?.text || '');
+        $root.find('.fm-auto').prop('checked', profile.auto !== false);
+        $root.find('.fm-auto-row').toggleClass('fm-hidden', side || (!who.sdPrompt && who.key.startsWith('persona:')));
+        renderSlots();
+        loraStatus();
+        if (!$root.find('[data-pane="gallery"]').hasClass('fm-hidden')) renderGallery();
+    };
+
+    const showPerson = async (id) => {
+        const person = id ? (await card.side.list()).find(p => p.id === id) : null;
+        const target = person ? card.side.who(person.id, person.name) : card;
+        who = target;
+        const next = await target.load();
+        if (target !== who) return;            // a later pick won
+        profile = next;
+        await renderPeople();
+        fillPerson();
+    };
+
     $root.on('click', '.fm-tab[data-tab]', function () { showTab(this.dataset.tab); });
+    $root.on('change', '.fm-person', async function () {
+        let id = this.value;
+        if (id === '+new' || id === '+cast') {
+            const name = id === '+cast' ? $(this).find(':selected').attr('data-name') : window.prompt('Name of the side character', '');
+            if (!name?.trim()) return renderPeople();
+            id = await card.side.add(name.trim());
+        }
+        await showPerson(id);
+    });
+    $root.on('change', '.fm-person-name', async function () {
+        const target = who;
+        const name = this.value.trim();
+        if (!name || !target.id) return $(this).val(target.name);
+        await save({ name }, target);
+        if (target === who) who = card.side.who(target.id, name);
+        await renderPeople();
+        fillPerson();
+    });
+    $root.on('click', '.fm-person-remove', async function () {
+        if (!who.id || !window.confirm(`Remove ${who.name} and their references from this card?`)) return;
+        await card.side.remove(who.id);
+        await showPerson('');
+    });
     $root.on('click', '.fm-upload', function () {
         uploadSlot = $(this).closest('.fm-slot').data('slot');
+        uploadWho = who;
         $file.val('').trigger('click');
     });
     $file.on('change', async function () {
@@ -181,7 +282,7 @@ export async function openMediaPanel(who) {
         if (problem) return toastr.warning(problem, 'Media Studio');
         const $slot = $root.find(`.fm-slot[data-slot="${uploadSlot}"]`).addClass('fm-busy');
         try {
-            await saveFromBlob(uploadSlot, file);
+            await saveFromBlob(uploadSlot, file, uploadWho);
         } catch (err) {
             toastr.warning(err?.detail || err?.message || String(err), 'Media Studio');
         } finally {
@@ -190,15 +291,16 @@ export async function openMediaPanel(who) {
     });
     $root.on('click', '.fm-generate', async function () {
         const slot = $(this).closest('.fm-slot').data('slot');
-        const prompt = window.prompt('Describe the image for this slot', `${who.name}, ${profile.appearance?.text || 'portrait photo'}, face clearly visible, neutral background`);
+        const target = who;
+        const prompt = window.prompt('Describe the image for this slot', `${target.name}, ${profile.appearance?.text || 'portrait photo'}, face clearly visible, neutral background`);
         if (!prompt) return;
         const $slot = $(this).closest('.fm-slot').addClass('fm-busy');
         try {
             const s = c.extensionSettings.flux_media;
             const refs = profile.fictional_confirmed ? Object.values(profile.refs).map(r => r?.asset).filter(Boolean) : [];
-            const job = await runDetached({ kind: 'image', selection: s.image, prompt, refs, folder: who.folder, origin: 'panel', person_key: who.key, lora_for: { name: who.name, sd_prompt: who.sdPrompt || '' } });
+            const job = await runDetached({ kind: 'image', selection: s.image, prompt, refs, folder: target.folder, origin: 'panel', person_key: target.key, lora_for: { name: target.name, sd_prompt: target.sdPrompt || '' } });
             const blob = await (await fetch(`${bridgeBase()}${job.file_url}`)).blob();
-            await saveFromBlob(slot, blob);
+            await saveFromBlob(slot, blob, target);
         } catch (err) {
             toastr.error(err?.detail || err?.message || String(err), 'Media Studio: image failed');
         } finally {
@@ -206,15 +308,15 @@ export async function openMediaPanel(who) {
         }
     });
     $root.on('click', '.fm-clear', async function () { await setSlot($(this).closest('.fm-slot').data('slot'), null); });
-    $root.on('change', '.fm-confirm', async function () { profile = await who.save({ fictional_confirmed: this.checked }); });
-    $root.on('change', '.fm-auto', async function () { profile = await who.save({ auto: this.checked }); });
+    $root.on('change', '.fm-confirm', async function () { await save({ fictional_confirmed: this.checked }); });
+    $root.on('change', '.fm-auto', async function () { await save({ auto: this.checked }); });
     $root.on('change', '.fm-age, .fm-appearance', async function () {
         const age = Number($root.find('.fm-age').val());
         if (age && age < 18) {
             toastr.warning('Age must be 18 or over.', 'Media Studio');
             return $root.find('.fm-age').val(profile.appearance?.age || '');
         }
-        profile = await who.save({ appearance: { age: age || '', text: String($root.find('.fm-appearance').val() || '') } });
+        await save({ appearance: { age: age || '', text: String($root.find('.fm-appearance').val() || '') } });
     });
 
     $root.on('click', '.fm-filter', function () {
@@ -245,26 +347,12 @@ export async function openMediaPanel(who) {
         }
     });
 
-    $root.find('.fm-confirm').prop('checked', !!profile.fictional_confirmed);
-    $root.find('.fm-age').val(profile.appearance?.age || '');
-    $root.find('.fm-appearance').val(profile.appearance?.text || '');
-    $root.find('.fm-auto').prop('checked', profile.auto !== false);
-    $root.find('.fm-auto-row').toggleClass('fm-hidden', !who.sdPrompt && who.key.startsWith('persona:'));
     if (profile.migrated) {
         $root.find('.fm-migrated').removeClass('fm-hidden').text('These came from your old avatar slots. Check each one is in the right slot.');
-        who.save({ migrated: false }).then(next => { profile = next; });
+        save({ migrated: false });
     }
-    renderSlots();
-    showTab(who.tab || 'refs');
-    if (who.key.startsWith('char:')) {
-        bridge('/media/lora-status', { method: 'POST', body: { names: [who.name], character_prompts: { [who.name]: who.sdPrompt || '' } }, timeout: 15000 })
-            .then((r) => {
-                const has = r.characters?.[who.name];
-                $root.find('.fm-lora-status').html(has
-                    ? '<i class="fa-solid fa-circle-check fm-ok"></i> This character has a LoRA. Flux images use it.'
-                    : '<i class="fa-solid fa-circle-info fm-warn"></i> No LoRA for this character. Flux switches to Seedream 4.5 with these references.');
-            })
-            .catch(() => $root.find('.fm-lora-status').text('Could not reach the bridge to check for a LoRA.'));
-    }
+    await renderPeople();
+    fillPerson();
+    showTab(card.tab || 'refs');
     await c.callGenericPopup($root, c.POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: true, large: false, allowVerticalScrolling: true, leftAlign: true });
 }

@@ -13,7 +13,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -61,6 +61,17 @@ def people_in_plan(plan: Plan, ctx: director.DirectorInput, option: Any) -> List
     return chosen[:1] if option.lora_arch else chosen[:option.people_cap]
 
 
+def gallery_people(people: Sequence[Any]) -> List[Dict[str, str]]:
+    """Each person's gallery, and a side character's shots in their story card's gallery too."""
+    rows: List[Dict[str, str]] = []
+    for p in people:
+        rows.append({"key": p.key, "role": p.role})
+        card = p.key.split("#side:", 1)[0] if p.side_of and "#side:" in p.key else ""
+        if card and all(r["key"] != card for r in rows):
+            rows.append({"key": card, "role": "story"})
+    return rows
+
+
 def guard(plan: Plan, people: Sequence[Any]) -> None:
     reason = director.minor_block(plan, people)
     telemetry.record("guard", "check", ok=reason is None, reason=reason, people=len(people))
@@ -80,7 +91,7 @@ async def plan_shot(job: Any, option: Any, mode: str) -> Tuple[Plan, List[Any]]:
     people = people_in_plan(plan, job.ctx, option)
     db.update_generation(job.id, plan_json=json.dumps(plan.public(), ensure_ascii=False))
     guard(plan, people)
-    db.add_people(job.id, [{"key": p.key, "role": p.role} for p in people])
+    db.add_people(job.id, gallery_people(people))
     return plan, people
 
 
