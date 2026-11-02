@@ -483,10 +483,26 @@ class SharedTests(unittest.TestCase):
         self.assertEqual(base.sniff_mime(b"\x00\x00\x00\x18ftypmp42"), "video/mp4")
         self.assertEqual(base.sniff_mime(b"RIFF0000WEBP"), "image/webp")
 
-    def test_video_presets_are_multiples_of_64(self):
-        for tier, sizes in base.WH_SIZES.items():
-            for shape, (width, height) in sizes.items():
-                self.assertEqual((width % 64, height % 64), (0, 0), f"{tier}/{shape}")
+    def test_clips_from_a_frame_keep_the_frames_shape_and_the_models_limits(self):
+        """Sogni's LTX needs both sides at 640+, so the old fixed 512x896 was widened to 640x896 and reshaped a 9:16 frame."""
+        frames = {"9:16": (9, 16), "16:9": (16, 9), "3:4": (3, 4), "4:3": (4, 3), "1:1": (1, 1)}
+        for option in catalog.options("video"):
+            if option.extra.get("sizing") != "wh":
+                continue
+            step, lowest = option.extra["size_step"], option.extra["min_side"]
+            for resolution in option.resolutions:
+                for name, (w, h) in frames.items():
+                    width, height = base.wh_exact(resolution, w, h, step=step, min_side=lowest)
+                    label = f"{option.label} {resolution} {name} -> {width}x{height}"
+                    self.assertEqual((width % step, height % step), (0, 0), label)
+                    self.assertGreaterEqual(min(width, height), lowest, label)
+                    self.assertAlmostEqual(width / height, w / h, delta=0.03 * w / h, msg=label)
+
+    def test_sogni_sizes_a_clip_from_the_frame_it_was_given(self):
+        for shape, frame, expect in (("9:16", noisy_jpeg(900, 1600), (640, 1152)), ("16:9", noisy_jpeg(1600, 900), (1152, 640))):
+            req = req_for("video", "sogni", "ltx-2.5", aspect_ratio=shape, resolution="480p")
+            size = Sogni()._size(req, frame)
+            self.assertEqual((size["width"], size["height"]), expect, shape)
 
 
 if __name__ == "__main__":

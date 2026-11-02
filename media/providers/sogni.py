@@ -22,7 +22,7 @@ import httpx
 
 from .. import db
 from ..config import MediaConfig
-from .base import Provider, RenderRequest, RenderResult, WH_SIZES, download, image_size, orientation, sniff_mime, wh_for
+from .base import Provider, RenderRequest, RenderResult, download, image_size, orientation, sniff_mime, wh_exact
 
 logger = logging.getLogger("media.sogni")
 
@@ -114,8 +114,9 @@ class Sogni(Provider):
         if tall:
             width, height = tall
             return {"width": height, "height": width} if landscape else {"width": width, "height": height}
-        if extra.get("sizing") == "wh" and req.resolution in WH_SIZES:
-            width, height = wh_for(req.resolution, *(shape or (9, 16)))
+        if extra.get("sizing") == "wh" and req.resolution:
+            ratio = tuple(int(n) for n in req.aspect_ratio.split(":")) if ":" in (req.aspect_ratio or "") else (9, 16)
+            width, height = wh_exact(req.resolution, *(shape or ratio), step=extra.get("size_step", 16), min_side=extra.get("min_side", 0))
             return {"width": width, "height": height}
         return {}
 

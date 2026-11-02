@@ -134,16 +134,30 @@ def closest_ratio(width: int, height: int, options: List[str]) -> str:
 
 
 # width x height per resolution tier and orientation. Multiples of 64: LTX and Wan accept these.
-WH_SIZES = {
-    "480p": {"landscape": (896, 512), "portrait": (512, 896), "square": (640, 640)},
-    "720p": {"landscape": (1280, 704), "portrait": (704, 1280), "square": (960, 960)},
-    "1080p": {"landscape": (1920, 1088), "portrait": (1088, 1920), "square": (1408, 1408)},
-}
+def wh_exact(resolution: str, width: int, height: int, step: int = 16, min_side: int = 0) -> Tuple[int, int]:
+    """Width and height for a clip that starts from a frame, with that frame's own shape.
 
-
-def wh_for(resolution: str, width: int, height: int) -> Tuple[int, int]:
-    table = WH_SIZES.get(resolution.lower(), WH_SIZES["720p"])
-    return table[orientation(width, height)]
+    The frame is sent as it is, so the clip's size has to match its shape or the provider crops or
+    stretches it. The short side never goes under the model's minimum and both sides are multiples of
+    the model's step. Any size within 1.5% of the frame's shape counts as exact, and among those the
+    one whose area is closest to the resolution asked for wins (480p 9:16 aims at 480x854). Sogni's
+    LTX models need both sides at 640 or more, so the old fixed 512x896 became 640x896 there, and a
+    9:16 frame was reshaped to 5:7.
+    """
+    target = int("".join(ch for ch in resolution if ch.isdigit()) or 720)
+    wide = width > height
+    ratio = max(width, height) / max(1, min(width, height))
+    lowest = -(-max(min_side, step) // step) * step            # rounded up to a multiple of the step
+    wanted_area = target * target * ratio
+    best = None
+    for short in range(lowest, max(lowest, round(target / step) * step) + 6 * step + 1, step):
+        long = round(short * ratio / step) * step
+        error = abs(long / short / ratio - 1)
+        score = (0.0 if error <= 0.015 else error, abs(short * long - wanted_area))
+        if best is None or score < best[0]:
+            best = (score, short, long)
+    _, short, long = best
+    return (long, short) if wide else (short, long)
 
 
 def error_text(resp: "httpx.Response") -> str:

@@ -258,15 +258,15 @@ VIDEO_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
                             url_refs=True, seedance_task=True, fps=24, tall={"480p": (480, 854)}, consent=True)],
         "ltx-2.3": [
             _v("sogni", "ltx-2.3", "ltx23-22b-10eros-v1.4-fp8mixed_i2v", "LTX-2.3 10Eros", FIRST, ("480p", "720p", "1080p"), _span(2, 20),
-               hint="Spark", sizing="wh"),
+               hint="Spark", sizing="wh", min_side=640, size_step=64),
             _v("sogni", "ltx-2.3", "ltx23-22b-fp8_i2v_distilled", "LTX-2.3 Distilled", FIRST, ("480p", "720p", "1080p"), _span(2, 20),
-               hint="Spark, fast", sizing="wh"),
+               hint="Spark, fast", sizing="wh", min_side=640, size_step=64),
         ],
         "ltx-2.5": [_v("sogni", "ltx-2.5", "ltx25-22b-int8_i2v_distilled", "LTX-2.5", FIRST, ("480p", "720p", "1080p"), _span(2, 20),
-                       hint="Spark", sizing="wh")],
+                       hint="Spark", sizing="wh", min_side=640, size_step=64)],
         "wan-2.2": [
-            _v("sogni", "wan-2.2", "wan_v2.2-14b-fp8_i2v_lightx2v", "Wan 2.2 LightX2V", FIRST, ("480p", "720p"), _span(2, 8), hint="Spark, fast", sizing="wh"),
-            _v("sogni", "wan-2.2", "wan_v2.2-14b-fp8_i2v", "Wan 2.2", FIRST, ("480p", "720p"), _span(2, 8), hint="Spark, full quality", sizing="wh"),
+            _v("sogni", "wan-2.2", "wan_v2.2-14b-fp8_i2v_lightx2v", "Wan 2.2 LightX2V", FIRST, ("480p", "720p"), _span(2, 8), hint="Spark, fast", sizing="wh", min_side=480, size_step=32),
+            _v("sogni", "wan-2.2", "wan_v2.2-14b-fp8_i2v", "Wan 2.2", FIRST, ("480p", "720p"), _span(2, 8), hint="Spark, full quality", sizing="wh", min_side=480, size_step=32),
         ],
     },
     "pixeldojo": {
