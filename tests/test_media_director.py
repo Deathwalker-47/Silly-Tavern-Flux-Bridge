@@ -205,6 +205,21 @@ class PlanCallTests(MediaCase):
         self.assertNotIn("Last photo", seen[1])
         self.assertNotIn("Most messages", seen[1], "no longer told that media is rare")
 
+    def test_decide_names_the_person_on_the_call_not_the_story_card(self):
+        seen = []
+
+        async def chat(messages, **_kw):
+            seen.append(messages[0]["content"])
+            return '{"action": "none"}'
+        with unittest.mock.patch.object(director.helper, "chat", chat):
+            run(director.decide({"reply": "Miss you", "char": "Seaside Inn", "call_with": "Lena", "user": "Sam", "call": True}))
+        self.assertIn("Sam and Lena are on a live voice call", seen[0])
+        self.assertNotIn("Seaside Inn", seen[0])
+
+    def test_the_director_is_told_who_is_on_the_call(self):
+        self.assertIn('"call.with"', director.DIRECTOR_RULES)
+        self.assertIn("The user is not in the shot", director.DIRECTOR_RULES)
+
     def test_next_speaker_must_be_a_member(self):
         members = [{"name": "Maya"}, {"name": "Lena"}]
         with self.with_replies('{"speaker": "lena", "beat": "shrugs", "long": true}'):

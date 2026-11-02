@@ -2531,6 +2531,13 @@ class VoiceTagsRequest(BaseModel):
     context: str = Field(default="")
     model: Optional[str] = Field(default=None)
 
+
+class CastRequest(BaseModel):
+    card: dict = Field(default_factory=dict, description="name, description, personality, scenario, first_mes, mes_example, lore")
+    user: str = Field(default="")
+    voices: list = Field(default_factory=list, description="[{voice_id, name, gender, description}]")
+    model: Optional[str] = Field(default=None)
+
 # ============================================
 # API ENDPOINTS
 # ============================================
@@ -3292,6 +3299,17 @@ async def helper_voice_tags(request: VoiceTagsRequest, http_request: Request = N
     except Exception as e:
         logger.warning(f"🧠 [Helper] voice-tags failed: {e}")
         return JSONResponse({"text": request.text, "changed": False, "error": str(e)})
+
+
+@app.post("/helper/cast")
+async def helper_cast(request: CastRequest, http_request: Request = None):
+    """The people on a story card who can answer a voice call, with a brief and a voice each (TavernVoice)."""
+    _check_edit_token(http_request)
+    try:
+        return JSONResponse(await ms.helper.cast(request.card, user=request.user, voices=request.voices, model=request.model))
+    except Exception as e:
+        logger.warning(f"🧠 [Helper] cast failed: {e}")
+        return JSONResponse({"people": [], "error": str(e)})
 
 
 @app.get("/helper/models")

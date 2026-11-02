@@ -116,6 +116,12 @@ async function ageMissing(chid, char, origin) {
     return true;
 }
 
+/** Who the user is on a TavernVoice call with in this chat: a person on a story card can answer, not just the card. */
+function callWith() {
+    const call = globalThis.TavernVoice?.call;
+    return call && !call.ended && call.chatId === ctx().getCurrentChatId() ? String(call.name || '') : '';
+}
+
 async function jobBody(kind, messageId, origin, request) {
     const s = settings();
     const c = ctx();
@@ -123,6 +129,8 @@ async function jobBody(kind, messageId, origin, request) {
     const { char } = characterOf(msg);
     const context = await directorContext(messageId, kind, groupProfile());
     if (request) context.user_request = request;
+    const onCall = callWith();
+    if (onCall) context.call = { with: onCall };
     const body = {
         kind, selection: s[kind], image_selection: s.image, context, aspect: s.aspect, origin,
         folder: char?.name || 'MediaStudio', group_id: c.groupId || null,
@@ -217,7 +225,7 @@ async function autoMedia(messageId, mode) {
                 chat_id: c.getCurrentChatId(), reply: String(msg.mes || ''), history: history(messageId), char: char?.name || c.name2, user: c.name1,
                 allow_image: allowImage, allow_video: allowVideo,
                 since_image: finiteOrNull(messagesSinceMedia('image')), since_video: finiteOrNull(messagesSinceMedia('video')),
-                call: !!globalThis.TavernVoice?.call,
+                call: !!callWith(), call_with: callWith() || undefined,
             },
         });
         log('director', d);

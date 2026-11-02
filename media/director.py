@@ -41,7 +41,8 @@ Reply with one JSON object only.
 10. Set "adult" to true when the scene shows nudity or sex. It only chooses LoRAs and never changes the prompt.
 11. "concept_loras": up to 3 keys from the list that truly fit what is visible. Leave it empty if none fit.
 12. "caption": a short line the character might text along with it, or empty.
-13. If "user_request" is present, the user asked for exactly that. Follow it."""
+13. If "user_request" is present, the user asked for exactly that. Follow it.
+14. If "call" is present, the user is on a phone call with the person named in "call.with", and they are in different places. That person is the main character, even on a card that names several people, and they are the one taking the photo or video: a selfie, a mirror shot, or what they point the camera at. The user is not in the shot and "pov" is false. Describe that person from their Appearance text when they have an entry in "characters", otherwise from the story."""
 
 PLAN_FIELDS = {
     "blocked": {"type": "boolean"}, "block_reason": {"type": "string"}, "main_character": {"type": "string"},
@@ -250,7 +251,7 @@ async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
     if not allow_image or not allow_video:
         allowed = [a for a, ok in (("image", allow_image), ("video", allow_video)) if ok]
         limits = f"\nRight now only these are allowed: {', '.join(allowed) or 'none'}. Anything else must be \"none\".\n"
-    char, user = body.get("char") or "Character", body.get("user") or "User"
+    char, user = body.get("call_with") or body.get("char") or "Character", body.get("user") or "User"
     context = ""
     if "since_image" in body or "since_video" in body:
         context += (f"\nLast photo: {_ago(body.get('since_image'))}. Last video: {_ago(body.get('since_video'))}."
