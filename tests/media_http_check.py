@@ -7,6 +7,7 @@ pattern or a token check that isn't applied. This runs in its own process
 import json
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import time
@@ -27,6 +28,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import flux_lora_bridge as bridge  # noqa: E402
 from media import director  # noqa: E402
+from media.providers import PROVIDERS  # noqa: E402
 from media.routes import public_generation  # noqa: E402
 from media_support import noisy_jpeg, small_jpeg  # noqa: E402
 
@@ -153,6 +155,37 @@ def main():
         cancelled = client.post(f"/media/jobs/{started.json()['job_id']}/cancel", headers=AUTH).json()
         assert cancelled["status"] in ("cancelled", "done"), cancelled
         assert slow
+
+        # keys: nobody gets one back, and no real provider sees a fake one
+        secret = "fake-test-key-9876"
+
+        async def fake_balance():
+            return {"amount": 5.0, "unit": "USD"}
+
+        PROVIDERS["nanogpt"].balance = fake_balance
+        assert client.get("/media/keys").status_code == 401
+        assert client.put("/media/keys/nanogpt", json={"key": secret}).status_code == 401
+        assert client.put("/media/keys/nothing", json={"key": secret}, headers=AUTH).status_code == 404
+        assert client.put("/media/keys/nanogpt", json={"key": "has space in it"}, headers=AUTH).status_code == 400
+        saved = client.put("/media/keys/nanogpt", json={"key": secret}, headers=AUTH)
+        assert saved.status_code == 200 and saved.json()["balance"] == 5.0, saved.text
+        listed = client.get("/media/keys", headers=AUTH)
+        row = next(k for k in listed.json()["keys"] if k["id"] == "nanogpt")
+        assert (row["source"], row["hint"], listed.json()["writable"]) == ("settings", "9876", True), listed.text
+        caps = client.get("/media/capabilities", headers=AUTH)
+        assert next(p for p in caps.json()["image"]["providers"] if p["id"] == "nanogpt")["configured"]
+        for reply in (saved, listed, caps):
+            assert secret not in reply.text
+        events = sqlite3.connect(Path(folder, "media.db")).execute("SELECT * FROM events").fetchall()
+        assert any("key_saved" in str(e) for e in events) and secret not in str(events)
+        bridge.Config.EDIT_API_TOKEN = ""
+        assert client.put("/media/keys/nanogpt", json={"key": secret}).status_code == 403
+        assert client.delete("/media/keys/nanogpt").status_code == 403
+        closed = client.get("/media/keys").json()
+        assert not closed["writable"] and all(k["hint"] == "" for k in closed["keys"]), closed
+        bridge.Config.EDIT_API_TOKEN = "test-token"
+        assert client.delete("/media/keys/nanogpt", headers=AUTH).status_code == 200
+        assert next(k for k in client.get("/media/keys", headers=AUTH).json()["keys"] if k["id"] == "nanogpt")["source"] == "none"
 
     print("PASS")
 

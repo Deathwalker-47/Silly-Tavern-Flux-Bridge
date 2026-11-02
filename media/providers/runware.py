@@ -11,7 +11,7 @@ import httpx
 
 from .. import loras, telemetry
 from ..config import MediaConfig
-from .base import Provider, RenderRequest, RenderResult, download, send, sniff_mime
+from .base import Provider, RenderRequest, RenderResult, check_key, download, send, sniff_mime
 
 
 LORA_READY_WAIT = 300       # seconds: a LoRA uploaded moments ago is still processing
@@ -118,6 +118,7 @@ class Runware(Provider):
         headers = {"Authorization": f"Bearer {MediaConfig.RUNWARE_API_KEY}", "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(MediaConfig.RUNWARE_ENDPOINT, json=[task], headers=headers)
+        check_key(resp)
         if resp.status_code != 200:
             return None
         item = (resp.json().get("data") or [{}])[0]

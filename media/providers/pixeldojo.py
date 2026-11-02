@@ -15,7 +15,7 @@ import httpx
 
 from .. import assets, db
 from ..config import MediaConfig
-from .base import Provider, RenderRequest, RenderResult, download, error_text, send, sniff_mime
+from .base import Provider, RenderRequest, RenderResult, check_key, download, error_text, send, sniff_mime
 
 URL_LIFETIME = 23 * 3600        # uploads last 24 h; stop reusing a link before it dies
 
@@ -187,4 +187,5 @@ class PixelDojo(Provider):
     async def balance(self) -> Optional[Dict[str, Any]]:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(f"{MediaConfig.PIXELDOJO_BASE}/credits", headers=self._headers())
+        check_key(resp)
         return {"amount": resp.json().get("credits"), "unit": "credits"} if resp.status_code == 200 else None

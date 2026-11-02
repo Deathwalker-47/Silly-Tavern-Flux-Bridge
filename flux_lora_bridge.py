@@ -307,7 +307,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 import media as ms  # helper LLM and Replicate client; the rest of Media Studio is in media/
-from media import loras as media_loras, routes as media_routes
+from media import keys as media_keys, loras as media_loras, routes as media_routes
 from media.jobs import runner as media_jobs
 from lora_dict import check_unique_urls, flat_entry, migrate_dict
 
@@ -3261,9 +3261,18 @@ async def txt2img(request: Txt2ImgRequest):
 # MEDIA STUDIO (see media/; these routes serve TavernVoice too)
 # ============================================
 
-media_routes.use_token_check(_check_edit_token)
+media_routes.use_token_check(_check_edit_token, lambda: bool(Config.EDIT_API_TOKEN))
 media_loras.use(lora_manager, resolve_runware_loras)
 app.include_router(media_routes.router)
+
+
+def _copy_keys_to_clients():
+    Config.RUNWARE_API_KEY = clients["runware"].api_key = media_keys.MediaConfig.RUNWARE_API_KEY
+    Config.REPLICATE_API_TOKEN = clients["replicate"].api_token = media_keys.MediaConfig.REPLICATE_API_TOKEN
+
+
+media_keys.on_change(_copy_keys_to_clients)
+media_keys.apply()
 
 
 @app.post("/helper/voice-tags")
