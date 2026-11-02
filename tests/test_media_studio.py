@@ -5,6 +5,7 @@ Flux client and Runware's LoRA mapping. The rest lives in tests/test_media_*.py.
 import asyncio
 import importlib
 import hashlib
+import json
 from pathlib import Path
 import sys
 import types
@@ -141,6 +142,27 @@ class HelperTests(unittest.TestCase):
     def test_voice_tags_are_sanitized_after_the_word_check(self):
         out = run(self.with_reply("Oh! <laugh> You called.").voice_tags("Oh! You called."))
         self.assertEqual(out["text"], "Oh! [laugh] You called.")
+
+    def test_cast_lists_the_people_who_can_answer_with_known_voices_only(self):
+        reply = json.dumps({"people": [
+            {"name": "Nadia", "gender": "Female", "about": "The innkeeper.", "sound": "warm, low", "voice": "ara"},
+            {"name": "Sam", "gender": "male", "about": "The caller.", "voice": "rex"},
+            {"name": "nadia", "gender": "female", "about": "Duplicate."},
+            {"name": "Bram", "gender": "dwarf", "about": "The cook.", "voice": "made-up"},
+            {"name": "  ", "about": "No name."},
+        ]})
+        helper = self.with_reply(f"Here you go:\n```json\n{reply}\n```")
+        voices = [{"voice_id": "ara", "name": "Ara", "description": "Warm"}, {"voice_id": "rex", "name": "Rex"}]
+        card = {"name": "Seaside Inn", "description": "An inn run by Nadia. Bram cooks.", "scenario": "", "lore": "Bram is gruff."}
+        out = run(helper.cast(card, user="Sam", voices=voices))
+        self.assertEqual([p["name"] for p in out["people"]], ["Nadia", "Bram"])
+        self.assertEqual(out["people"][0], {"name": "Nadia", "gender": "female", "about": "The innkeeper.", "sound": "warm, low", "voice": "ara"})
+        self.assertEqual((out["people"][1]["gender"], out["people"][1]["voice"]), ("other", ""))
+        system, user_msg = self.last_messages[0]["content"], self.last_messages[1]["content"]
+        self.assertIn("phone call from Sam", system)
+        self.assertIn("- ara: Ara, Warm", system)
+        self.assertIn("lore:\nBram is gruff.", user_msg)
+        self.assertNotIn("scenario:", user_msg, "empty fields are left out")
 
     def test_voice_tags_level_none_skips_the_llm(self):
         out = run(self.with_reply("SHOULD NOT BE USED").voice_tags("Hi.", tag_level="none"))

@@ -109,6 +109,24 @@ Rules:
 Output only the tagged line, nothing else."""
 
 
+CAST_SYSTEM = """You read a roleplay character card and list the people in it who could pick up a phone call from {user}.
+The card may be one person, or a story with several people (a scenario, an RPG party, a household, a harem).
+Rules:
+- List each named person in the story who can talk, most important first. At most 12.
+- Never list {user}: that is the person making the call. Skip unnamed extras, groups, narrators and places.
+- If the card is one person, list just that person.
+- "about": 2 to 4 sentences for an actor about to play them on the phone: who they are, how they know {user}, their personality and how they talk. Use only what the card says.
+- "sound": a few words on how their voice sounds (age, tone, pace, accent), or empty.
+- "gender": female, male or other.
+- "voice": the id of the voice below that best fits their gender, age and personality. Give each person a different voice when the list allows it.
+Voices (id: description):
+{voices}
+Reply with one JSON object only: {{"people": [{{"name": "", "gender": "", "about": "", "sound": "", "voice": ""}}]}}"""
+
+CAST_FIELDS = ("description", "personality", "scenario", "first_mes", "mes_example", "lore")
+CAST_MAX_PEOPLE = 12
+
+
 def text_model_allowed(model: str) -> bool:
     """No SFW-only model anywhere in the chat pipeline: only uncensored text models run."""
     named = (MediaConfig.DIRECTOR_MODEL, MediaConfig.HELPER_MODEL, MediaConfig.SUMMARIZER_MODEL)
@@ -197,6 +215,44 @@ class HelperLLM:
         telemetry.record("voice", "tags", ok=True, tag_level=tag_level, chars=len(text), changed=reply != text,
                          tags=len(_TAG_RE.findall(reply)))
         return {"text": reply, "changed": reply != text}
+
+    async def cast(self, card: Dict[str, Any], *, user: str = "", voices: Optional[List[Dict[str, Any]]] = None,
+                   model: Optional[str] = None) -> Dict[str, Any]:
+        """The people on a card who can answer a call, each with a short brief and a voice (TavernVoice)."""
+        user = user or "the user"
+        voices = [v for v in voices or [] if v.get("voice_id")]
+        listed = "\n".join(f"- {v['voice_id']}: {', '.join(str(v[k]) for k in ('name', 'gender', 'description') if v.get(k))}"
+                           for v in voices) or "- (none, leave voice empty)"
+        parts = [f"Card name: {card.get('name') or ''}"]
+        parts += [f"{key}:\n{str(card[key])[:12000]}" for key in CAST_FIELDS if str(card.get(key) or "").strip()]
+        reply = await self.chat(
+            [{"role": "system", "content": CAST_SYSTEM.format(user=user, voices=listed)},
+             {"role": "user", "content": "\n\n".join(parts)}],
+            model=model, max_tokens=2000, temperature=0.2, timeout=90, purpose="cast",
+        )
+        known = {v["voice_id"] for v in voices}
+        people: List[Dict[str, str]] = []
+        seen = {user.lower()}
+        for raw in extract_json(reply).get("people") or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            gender = str(raw.get("gender") or "").strip().lower()
+            voice = str(raw.get("voice") or "").strip()
+            people.append({
+                "name": name[:60],
+                "gender": gender if gender in ("female", "male") else "other",
+                "about": str(raw.get("about") or "").strip()[:800],
+                "sound": str(raw.get("sound") or "").strip()[:200],
+                "voice": voice if voice in known else "",
+            })
+            if len(people) == CAST_MAX_PEOPLE:
+                break
+        telemetry.record("voice", "cast", ok=bool(people), people=len(people))
+        return {"people": people}
 
     async def models(self, force: bool = False) -> List[Dict[str, Any]]:
         """Text models from NanoGPT's public catalog (cached for an hour)."""

@@ -227,7 +227,8 @@ def reference_people(option: Any, plan: Plan, people: Sequence[Any], job: Any) -
 
 async def run_image(job: Any) -> None:
     option = job.option
-    job.ctx.force_pov = bool(option.lora_arch)
+    # On a phone call the user is somewhere else, so there are no hands of theirs to show.
+    job.ctx.force_pov = bool(option.lora_arch) and not job.ctx.raw.get("call")
     mode = option.modes[0]
     plan, people = await plan_shot(job, option, mode)
 
