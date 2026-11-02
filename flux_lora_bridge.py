@@ -1,4 +1,9 @@
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")  # first: media/ and Config read the environment on import
+
 # =========================
 # PROVIDER ORDER (UPDATED)
 # =========================
