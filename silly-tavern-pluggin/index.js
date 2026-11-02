@@ -327,6 +327,14 @@ async function refreshBalances() {
 // Settings: test a route, read the pipeline report
 // ---------------------------------------------------------------------------
 
+/** Some routes only edit an image, so a test sends the open character's confirmed references. */
+async function testReferences() {
+    const { characterId } = ctx();
+    if (characterId === undefined || characterId === null) return [];
+    const profile = await getCharProfile(characterId);
+    return profile.fictional_confirmed ? Object.values(profile.refs).map(r => r?.asset).filter(Boolean) : [];
+}
+
 async function testRoute() {
     const kind = $('#fm_test_kind').val();
     const prompt = String($('#fm_test_prompt').val() || '').trim();
@@ -335,7 +343,7 @@ async function testRoute() {
     const $out = $('#fm_test_out').text('Running at the lowest setting…');
     $('#fm_test_verdict').addClass('displayNone');
     try {
-        const job = await runDetached({ kind, selection: route, prompt, motion_prompt: kind === 'video' ? prompt : '', image_selection: s.image, audio: false }, '/media/routes/test');
+        const job = await runDetached({ kind, selection: route, prompt, motion_prompt: kind === 'video' ? prompt : '', refs: await testReferences(), image_selection: s.image, audio: false }, '/media/routes/test');
         const url = `${bridgeBase()}${job.file_url}`;
         $out.html(kind === 'video' ? `<video src="${esc(url)}" controls class="fm-test-media"></video>` : `<img src="${esc(url)}" class="fm-test-media" alt="">`);
         const { variant } = routeInfo(kind);

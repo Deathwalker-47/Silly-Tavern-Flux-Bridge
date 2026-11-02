@@ -130,6 +130,13 @@ class ImageJobTests(JobCase):
         self.assertEqual((step["status"], step["family"]), ("done", "seedream-5-pro"))
         self.assertIn("finished scene", row["prompt"])
 
+    def test_a_route_test_of_the_best_option_sends_its_references_to_both_steps(self):
+        asset = assets.store(noisy_jpeg(700, 900))[0]
+        row = self.finished({"kind": "image", "selection": {"provider": "mock", "family": "best"}, "prompt": "a red chair", "test": True, "refs": [asset.id]})
+        self.assertEqual(row["status"], "done", row["error"])
+        for generation in (row, db.generation(row["parent_id"])):
+            self.assertEqual(json.loads(generation["params_json"])["references"], 2 if generation is row else 1)
+
     def test_the_gallery_counts_what_the_earlier_steps_cost(self):
         self.replies = [plan()]
         row = self.finished({"kind": "image", "selection": {"provider": "mock", "family": "best"}, "message_key": "m1", **self.context()})

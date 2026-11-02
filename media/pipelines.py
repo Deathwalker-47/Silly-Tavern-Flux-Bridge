@@ -267,7 +267,8 @@ async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> 
     aspect = choose_aspect(job, finish_model, plan)
 
     refs = pick_references(people, plan.ref_order, scene.max_refs)
-    step_one = RenderRequest(option=scene, mode="reference", prompt=render_tokens(plan.prompt, scene, refs), refs=to_assets(refs),
+    extra_assets = job.direct_refs()
+    step_one = RenderRequest(option=scene, mode="reference", prompt=render_tokens(plan.prompt, scene, refs), refs=to_assets(refs) + extra_assets,
                              aspect_ratio=catalog.pick_aspect(scene, aspect), seed=new_seed(), network=job.network)
     row = child_row(job, "best_scene")
     first = await render(job, step_one, row)
@@ -276,7 +277,7 @@ async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> 
 
     faces = pick_references(people, ["face_1", "face_2"], finish_model.max_refs - 1)
     final = RenderRequest(option=finish_model, mode="reference", prompt=face_edit_prompt(faces, finish_model),
-                          refs=[base, *to_assets(faces)], aspect_ratio=aspect, seed=new_seed(), network=job.network)
+                          refs=[base, *to_assets(faces), *extra_assets][:finish_model.max_refs], aspect_ratio=aspect, seed=new_seed(), network=job.network)
     note_inputs(job.id, [*refs, *faces])
     result = await render(job, final)
     finish(job, final, result, parent=row)

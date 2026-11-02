@@ -195,7 +195,7 @@ export async function openMediaPanel(who) {
         const $slot = $(this).closest('.fm-slot').addClass('fm-busy');
         try {
             const s = c.extensionSettings.flux_media;
-            const refs = Object.values(profile.refs).map(r => r?.asset).filter(Boolean);
+            const refs = profile.fictional_confirmed ? Object.values(profile.refs).map(r => r?.asset).filter(Boolean) : [];
             const job = await runDetached({ kind: 'image', selection: s.image, prompt, refs, folder: who.folder, origin: 'panel', person_key: who.key, lora_for: { name: who.name, sd_prompt: who.sdPrompt || '' } });
             const blob = await (await fetch(`${bridgeBase()}${job.file_url}`)).blob();
             await saveFromBlob(slot, blob);
