@@ -71,6 +71,31 @@
     margin: 0;
 }
 
+.fm-people {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+.fm-people .fm-person {
+    flex: 2 1 220px;
+    min-width: 0;
+    margin: 0;
+}
+
+.fm-people .fm-person-name {
+    flex: 1 1 140px;
+    min-width: 0;
+    margin: 0;
+}
+
+.fm-people-hint {
+    display: block;
+    margin-bottom: 6px;
+}
+
 .fm-tabs {
     display: flex;
     gap: 6px;

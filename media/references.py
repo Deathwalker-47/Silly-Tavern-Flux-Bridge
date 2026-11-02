@@ -24,6 +24,7 @@ class Person:
     refs: Dict[str, str] = field(default_factory=dict)   # slot -> asset id
     sd_prompt: str = ""
     role: str = "other"
+    side_of: str = ""      # a side character inside a story card, by the card's name
 
     @classmethod
     def from_context(cls, raw: Dict[str, Any], role: str = "other") -> "Person":
@@ -32,7 +33,7 @@ class Person:
                    age=int(age) if str(age or "").strip().isdigit() else None,
                    appearance=str(raw.get("appearance") or ""),
                    refs={k: v for k, v in (raw.get("refs") or {}).items() if v},
-                   sd_prompt=str(raw.get("sd_prompt") or ""), role=role)
+                   sd_prompt=str(raw.get("sd_prompt") or ""), role=role, side_of=str(raw.get("side_of") or ""))
 
 
 @dataclass

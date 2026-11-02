@@ -1,6 +1,7 @@
 // Character and persona media profiles: five tagged reference slots plus Appearance.
 // Characters keep theirs on the card (data.extensions.flux_media), so it travels with
 // exports. SillyTavern personas have no extension field, so theirs live in our settings.
+// A story card can also hold side characters, each a profile of their own under `side`.
 
 import { urlToAsset } from './assets.js';
 
@@ -49,10 +50,11 @@ export async function getCharProfile(chid) {
     return migrateProfile(c.characters[chid]?.data?.extensions?.[KEY]);
 }
 
-/** Queued read-modify-write so quick edits don't overwrite each other. */
+/** Queued read-modify-write so quick edits don't overwrite each other. A patch can be a function of the current profile. */
 export function setCharProfile(chid, patch) {
     const run = cardWrites.then(async () => {
-        const next = { ...(await getCharProfile(chid)), ...patch };
+        const current = await getCharProfile(chid);
+        const next = { ...current, ...(typeof patch === 'function' ? patch(current) : patch) };
         await ctx().writeExtensionField(chid, KEY, next);
         return next;
     });
@@ -61,6 +63,35 @@ export function setCharProfile(chid, patch) {
 }
 
 export const charKey = (char) => `char:${char?.avatar || char?.name}`;
+
+// ---- side characters on a story card ----
+// The card's own references stay the default. Each side character keeps a stable id, so a
+// rename keeps their gallery, which the bridge files under this key and the card's.
+
+export const sideKey = (char, id) => `${charKey(char)}#side:${id}`;
+
+export const sideList = (profile) => (profile?.side || []).filter(p => p?.id);
+
+const sideProfile = (person) => ({ ...migrateProfile(person), id: person.id, name: person.name || '' });
+
+export async function getSideProfile(chid, id) {
+    const person = sideList(await getCharProfile(chid)).find(p => p.id === id);
+    return sideProfile(person || { ...blank(), id });
+}
+
+export async function setSideProfile(chid, id, patch) {
+    const apply = p => ({ ...p, ...(typeof patch === 'function' ? patch(sideProfile(p)) : patch) });
+    const next = await setCharProfile(chid, current => ({ side: sideList(current).map(p => (p.id === id ? apply(p) : p)) }));
+    return sideProfile(sideList(next).find(p => p.id === id) || { ...blank(), id });
+}
+
+export async function addSidePerson(chid, name) {
+    const id = Math.random().toString(36).slice(2, 10);
+    await setCharProfile(chid, current => ({ side: [...sideList(current), { ...blank(), id, name }] }));
+    return id;
+}
+
+export const removeSidePerson = (chid, id) => setCharProfile(chid, current => ({ side: sideList(current).filter(p => p.id !== id) }));
 
 // ---- personas ----
 
@@ -81,7 +112,8 @@ export function getPersonaProfile(id) {
 export function setPersonaProfile(id, patch) {
     const c = ctx();
     const store = (c.extensionSettings[KEY].personas ??= {});
-    store[id] = { ...getPersonaProfile(id), ...patch };
+    const current = getPersonaProfile(id);
+    store[id] = { ...current, ...(typeof patch === 'function' ? patch(current) : patch) };
     c.saveSettingsDebounced();
     return store[id];
 }

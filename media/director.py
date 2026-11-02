@@ -30,19 +30,20 @@ DIRECTOR_RULES = """You are the media director for a roleplay chat. You turn the
 Reply with one JSON object only.
 
 1. Read the whole reply and the history. Describe what is visible now, not what was said about it.
-2. Pick the main character. Include only people who are physically present in this moment.
+2. Pick the main character. Include only people who are physically present in this moment, and every person with an entry who is.
 3. If "force_pov" is true, describe only the main character, set "pov" to true, and put only the user's hands, arms, legs or similar in "user_visible". No other person may appear.
 4. Otherwise choose POV or third person from the scene. Include at most "people_cap" people, main character first.
 5. Use each person's Appearance text. It wins over anything else, including the chat.
 6. Order the reference slots for this scene in "ref_order": face_1, face_2, full_body, portrait, naked. Never drop one. Code fits as many as the model allows.
 7. Choose "aspect_ratio" from the model's allowed list, and let the scene decide it: tall subjects and phone-style framing take 9:16, wide scenes, landscapes and groups 16:9. The references never limit this choice. They are sent exactly as they are and are never cropped, padded or stretched, whatever shape the picture has. Each person's "reference_shapes" gives their real shapes; use it only to break a tie between shapes that suit the scene equally. If a shape isn't allowed use the nearest allowed one, portrait before landscape. Leave it empty when the list says the first frame sets the shape. Give the reason in "aspect_reason".
-8. Write in the target model's format below. Refer to a reference image only as {{ref:Name:slot}}, for example {{ref:Maya:face_1}}. Never write an image number.
+8. Write in the target model's format below. Refer to a reference image only as {{ref:Name:slot}}, for example {{ref:Maya:face_1}}, where Name is the person's "name" exactly as given, even when the story calls them something else. Never write an image number.
 9. Set "blocked" to true only if the scene sexualizes anyone under 18 or anyone described as a child, and say why in "block_reason". Never soften, refuse or reword anything else.
 10. Set "adult" to true when the scene shows nudity or sex. It only chooses LoRAs and never changes the prompt.
 11. "concept_loras": up to 3 keys from the list that truly fit what is visible. Leave it empty if none fit.
 12. "caption": a short line the character might text along with it, or empty.
 13. If "user_request" is present, the user asked for exactly that. Follow it.
-14. If "call" is present, the user is on a phone call with the person named in "call.with", and they are in different places. That person is the main character, even on a card that names several people, and they are the one taking the photo or video: a selfie, a mirror shot, or what they point the camera at. The user is not in the shot and "pov" is false. Describe that person from their Appearance text when they have an entry in "characters", otherwise from the story."""
+14. If "call" is present, the user is on a phone call with the person named in "call.with", and they are in different places. That person is the main character, even on a card that names several people, and they are the one taking the photo or video: a selfie, a mirror shot, or what they point the camera at. The user is not in the shot and "pov" is false. Describe that person from their Appearance text when they have an entry in "characters", otherwise from the story.
+15. An entry with "side_of" is a side character inside that story card, with their own Appearance and references. The story card's own entry stays the default: use it for any shot that doesn't feature one of its side characters. When a side character is physically present in this moment, or is the one on the call, include them by their own key. Every reference image of each person you include is sent to the model, and nobody else's, so include the story card's own entry alongside them only when the story shows its own character in this moment, not just because the scene is set in their place or their world. Never describe a side character with the story card's Appearance, or the story card's character with a side character's."""
 
 PLAN_FIELDS = {
     "blocked": {"type": "boolean"}, "block_reason": {"type": "string"}, "main_character": {"type": "string"},
@@ -125,8 +126,11 @@ class DirectorInput:
         def person(p: Person) -> Dict[str, Any]:
             lora = loras.character_lora(p.name, p.sd_prompt, arch)
             shapes = {slot: text for slot, key in p.refs.items() if (text := assets.shape_text(key))}
-            return {"key": p.key, "name": p.name, "age": p.age, "appearance": p.appearance, "slots": list(p.refs),
-                    "reference_shapes": shapes, "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
+            entry = {"key": p.key, "name": p.name, "age": p.age, "appearance": p.appearance, "slots": list(p.refs),
+                     "reference_shapes": shapes, "has_lora": bool(lora), "lora_trigger": (lora or {}).get("prepend_prompt", "")}
+            if p.side_of:
+                entry["side_of"] = p.side_of
+            return entry
 
         out["characters"] = [person(p) for p in self.characters]
         if self.user:

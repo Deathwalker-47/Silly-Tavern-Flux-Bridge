@@ -13,7 +13,7 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
@@ -23,7 +23,7 @@ from .config import MediaConfig
 from .director import Plan
 from .providers import PROVIDERS, provider_configured
 from .providers.base import RenderRequest, RenderResult
-from .references import Ref, pick_references, render_tokens
+from .references import PLACEHOLDER, Ref, pick_references, render_tokens
 
 logger = logging.getLogger("media.pipelines")
 
@@ -54,11 +54,23 @@ def image_route(family: str, providers: Sequence[str]) -> catalog.ModelOption:
 
 
 def people_in_plan(plan: Plan, ctx: director.DirectorInput, option: Any) -> List[Any]:
-    """The people the director chose, main character first, cut to this model's limit."""
-    chosen = ctx.people_by_key([plan.main_character] + [p.get("key") for p in plan.people])
+    """The people the director chose, main character first, then anyone its prompt points a reference at
+    but left off the list, cut to this model's limit."""
+    named = [m.group(1) for text in (plan.prompt, plan.motion_prompt, plan.last_frame_prompt) for m in PLACEHOLDER.finditer(text or "")]
+    chosen = ctx.people_by_key([plan.main_character] + [p.get("key") for p in plan.people] + named)
     if not plan.main_character:
-        chosen = ctx.people_by_key(p.get("key") for p in plan.people)
+        chosen = ctx.people_by_key([p.get("key") for p in plan.people] + named)
     return chosen[:1] if option.lora_arch else chosen[:option.people_cap]
+
+
+def gallery_people(people: Sequence[Any]) -> List[Dict[str, str]]:
+    """Each person's gallery, and a side character's shots in their story card's gallery too."""
+    rows = [{"key": p.key, "role": p.role} for p in people]
+    for p in people:
+        card = p.key.split("#side:", 1)[0] if p.side_of and "#side:" in p.key else ""
+        if card and all(r["key"] != card for r in rows):
+            rows.append({"key": card, "role": "story"})
+    return rows
 
 
 def guard(plan: Plan, people: Sequence[Any]) -> None:
@@ -80,7 +92,7 @@ async def plan_shot(job: Any, option: Any, mode: str) -> Tuple[Plan, List[Any]]:
     people = people_in_plan(plan, job.ctx, option)
     db.update_generation(job.id, plan_json=json.dumps(plan.public(), ensure_ascii=False))
     guard(plan, people)
-    db.add_people(job.id, [{"key": p.key, "role": p.role} for p in people])
+    db.add_people(job.id, gallery_people(people))
     return plan, people
 
 
