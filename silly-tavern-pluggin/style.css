@@ -335,3 +335,13 @@
 
 /* SillyTavern ships only Font Awesome's solid weight, so fa-regular draws solid too. */
 .fm-star.fa-regular { opacity: 0.25; }
+
+/* Chat bar: photo and video for the last character message. */
+.fm-bar-button {
+    font-size: var(--bottomFormIconSize, 1.2em);
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.7;
+    cursor: pointer;
+    transition: opacity 0.2s, color 0.2s;
+}
+.fm-bar-button:hover { opacity: 1; color: var(--SmartThemeQuoteColor); }

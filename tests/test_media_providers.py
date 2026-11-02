@@ -160,6 +160,17 @@ class NanoGPTTests(ProviderCase):
         near = provider.build_image(req, [noisy_jpeg(880, 1536)])        # 2% off: still takes the references' shape
         self.assertNotIn("aspect_ratio", near)
 
+    def test_seedream_5_pro_stays_at_1k_when_the_user_picks_price_over_shape(self):
+        tall, wide = noisy_jpeg(864, 1536), noisy_jpeg(1536, 864)
+        req = req_for("image", "nanogpt", "seedream-5-pro", aspect_ratio="16:9")
+        req.budget = True
+        body = NanoGPT().build_image(req, [tall, wide])
+        self.assertEqual((body["resolution"], "aspect_ratio" in body), ("1k", False))
+        self.assertEqual(NanoGPT().build_image(req, [])["aspect_ratio"], "16:9", "with no reference something must set the shape")
+        qwen = req_for("image", "nanogpt", "qwen-edit", aspect_ratio="16:9")
+        qwen.budget = True
+        self.assertEqual(NanoGPT().build_image(qwen, [tall])["aspect_ratio"], "16:9", "only models that bill the ratio higher drop it")
+
     def test_seedream_45_image_body(self):
         req = req_for("image", "nanogpt", "seedream-4.5", aspect_ratio="16:9")
         body = NanoGPT().build_image(req, [noisy_jpeg()])

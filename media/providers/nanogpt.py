@@ -49,7 +49,8 @@ class NanoGPT(Provider):
         """Seedream 5 Pro bills a named aspect ratio at the 2k price ($0.09, about 4 MP) and plain `1k`
         at half ($0.045, about 1 MP), where the picture takes its shape from the references. With
         mixed-shape references it picked 9:16 whichever came first, so the ratio is only left off
-        when every reference already has the shape that was asked for."""
+        when every reference already has the shape that was asked for, or when the user chose the
+        1k price over the scene's shape. At 1k it ignores size, width/height and image_size."""
         if not refs:
             return False
         width, height = (float(n) for n in aspect.split(":"))
@@ -69,7 +70,8 @@ class NanoGPT(Provider):
             body["resolution"] = f"{width}x{height}"
         else:
             body["resolution"] = extra["resolution"]
-        if extra.get("send_aspect") and not self._refs_have_shape(refs, req.aspect_ratio):
+        budget = req.budget and extra.get("cheaper_without_aspect") and refs
+        if extra.get("send_aspect") and not budget and not self._refs_have_shape(refs, req.aspect_ratio):
             body["aspect_ratio"] = req.aspect_ratio
         if refs:
             body["input_references"] = [to_data_uri(r) for r in refs]

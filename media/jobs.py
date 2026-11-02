@@ -41,6 +41,7 @@ class Job:
         self.image_selection = body.get("image_selection") or {}
         self.mode = self.selection.get("mode") or option.modes[0]
         self.network = body.get("sogni_network") or ""
+        self.budget = bool(body.get("seedream_1k"))
         self.device = (body.get("context") or {}).get("device") or "portrait"
         self.aspect_setting = body.get("aspect") or "director"
         self.ctx = DirectorInput(body.get("context"))

@@ -148,6 +148,7 @@ async def collect(provider: Any, task_id: str, req: RenderRequest, created_at: f
 async def render(job: Any, req: RenderRequest, row_id: Optional[str] = None) -> RenderResult:
     row_id = row_id or job.id
     provider = PROVIDERS[req.option.provider]
+    req.budget = bool(getattr(job, "budget", False))
     trim_prompt(req)
     fields = dict(provider=req.option.provider, model_id=req.option.id, family=req.option.family, mode=req.mode,
                   prompt=req.prompt, negative_prompt=req.negative_prompt, aspect_ratio=req.aspect_ratio,
@@ -286,6 +287,7 @@ async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> 
     first = await render(job, step_one, row)
     finish_row(row, first, step_one)
     base, _existing = assets.store(first.data, "frame")
+    aspect = follow_opening_frame(finish_model, base, aspect)    # at the 1k price the scene step takes the references' shape
 
     faces = pick_references(people, ["face_1", "face_2"], finish_model.max_refs - 1)
     final = RenderRequest(option=finish_model, mode="reference", prompt=face_edit_prompt(faces, finish_model),

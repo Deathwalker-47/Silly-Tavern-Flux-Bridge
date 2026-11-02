@@ -16,9 +16,14 @@ const EXTENSIONS = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'web
 const esc = (s) => $('<span>').text(String(s ?? '')).html();
 
 const watching = new Set();
-let hooks = { counted() {}, note() {} };
+let hooks = { counted() {}, note() {}, failed() {} };
 
-/** counted(kind) bumps the daily usage, note(job) tells the character what it sent. */
+/** Progress for other extensions (a voice call's window): '' when nothing is running. */
+function announce(chatId, text) {
+    document.dispatchEvent(new CustomEvent('mediastudio:status', { detail: { chatId, text } }));
+}
+
+/** counted(kind) bumps the daily usage, note(job) tells the character what it sent, failed(job) reports a failure. */
 export function configureJobs(next) {
     hooks = { ...hooks, ...next };
 }
@@ -94,11 +99,15 @@ function statusLine(job) {
     return {
         set(state) {
             const el = place();
+            announce(job.chat_id, `${state.kind === 'video' ? 'Video' : 'Photo'}: ${state.message || state.status}`);
             if (!el) return;
             const icon = state.kind === 'video' ? 'fa-film' : 'fa-image';
             el.querySelector('.fm-status-text').innerHTML = `<i class="fa-solid ${icon} fa-beat-fade"></i> ${esc(state.message || state.status)} · ${state.elapsed ?? 0}s`;
         },
-        remove: () => document.getElementById(id)?.remove(),
+        remove: () => {
+            announce(job.chat_id, '');
+            document.getElementById(id)?.remove();
+        },
     };
 }
 
@@ -177,7 +186,7 @@ async function watch(first) {
             if (ENDED.includes(job.status)) {
                 forget(job.id);
                 if (job.status === 'failed') {
-                    toastr.error(job.error || 'Generation failed', `Media Studio: ${job.kind} failed`);
+                    hooks.failed(job);
                     track('job_failed_seen', { generation_id: job.id, kind: job.kind });
                 }
                 return;
@@ -245,6 +254,6 @@ export async function resumeOpenJobs() {
         if (info.chatId !== chatId || seen.has(id)) continue;
         const job = await bridge(`/media/jobs/${id}`, { timeout: 20000 }).catch(() => null);
         forget(id);
-        if (job?.status === 'failed') toastr.error(job.error || 'Generation failed', `Media Studio: ${job.kind} failed while you were away`);
+        if (job?.status === 'failed') hooks.failed(job, { away: true });
     }
 }
