@@ -175,7 +175,7 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
                               hint="$0.09 in the scene's shape, $0.045 at 1k in the references' shape (Media Studio setting). 10 refs",
                               hidden=True, resolution="1k", send_aspect=True, cheaper_without_aspect=True, needs_ref=True)],
         "best": [_i("nanogpt", "best", "best", "The Best Option", REF, tested=True, max_refs=10, aspects=ALL_SHAPES, lowest="1k",
-                    usd=0.13, hint="$0.13: Seedream 5 Pro scene ($0.09), then Seedream 4.5 face pass ($0.04)")],
+                    usd=0.13, hint="$0.13: Seedream 5 Pro scene ($0.09), then Seedream 4.5 face pass ($0.04). $0.085 with the 1k setting")],
     },
     "sogni": {
         "zimage": [_i("sogni", "zimage", "z_image_turbo_bf16", "Z-Image Turbo", ("text",), tested=True, lowest="768x1344", hint="Spark, no LoRA", sizes=FLUX_SIZES)],

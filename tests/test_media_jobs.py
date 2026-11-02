@@ -130,6 +130,25 @@ class ImageJobTests(JobCase):
         self.assertEqual((step["status"], step["family"]), ("done", "seedream-5-pro"))
         self.assertIn("finished scene", row["prompt"])
 
+    def test_at_the_1k_price_the_face_pass_keeps_the_shape_the_scene_step_made(self):
+        self.replies = [plan(aspect_ratio="16:9")]
+        original = Mock.poll
+        seen = []
+
+        async def poll(provider, task_id, req):
+            result = await original(provider, task_id, req)
+            if result:
+                seen.append((req.option.family, req.budget))
+            if result and req.option.family == "seedream-5-pro":       # NanoGPT at 1k: the references' shape, whatever was asked
+                result.data = noisy_jpeg(800, 1424)
+            return result
+        with unittest.mock.patch.object(Mock, "poll", poll):
+            row = self.finished({"kind": "image", "selection": {"provider": "mock", "family": "best"}, "seedream_1k": True, **self.context()})
+        self.assertEqual(row["status"], "done", row["error"])
+        self.assertEqual(db.generation(row["parent_id"])["aspect_ratio"], "16:9", "the scene step was still asked for the scene")
+        self.assertEqual(row["aspect_ratio"], "9:16", "the face pass follows the picture it edits, never reshapes it")
+        self.assertEqual(seen, [("seedream-5-pro", True), ("seedream-4.5", True)])
+
     def test_a_route_test_of_the_best_option_sends_its_references_to_both_steps(self):
         asset = assets.store(noisy_jpeg(700, 900))[0]
         row = self.finished({"kind": "image", "selection": {"provider": "mock", "family": "best"}, "prompt": "a red chair", "test": True, "refs": [asset.id]})

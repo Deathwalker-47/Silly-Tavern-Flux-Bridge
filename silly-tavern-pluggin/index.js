@@ -175,7 +175,7 @@ async function reportFailure(job, { away = false } = {}) {
         const c = ctx();
         const chid = c.characters.findIndex(ch => ch.name === who);
         if (chid >= 0) fix = () => openCharacterPanel(chid, 'appearance');
-        else fix = () => openPersonaPanel();      // not a character, so it's you: your persona's Media panel
+        else fix = () => openPersonaPanel('appearance');      // not a character, so it's you: your persona's Media panel
     }
     toastr.error(`${error}${fix ? ' Tap to fix it.' : ''}`, title, { timeOut: 0, extendedTimeOut: 0, closeButton: true, tapToDismiss: !fix, onclick: fix || undefined });
 }
@@ -585,11 +585,11 @@ function openCharacterPanel(chid, tab) {
     });
 }
 
-async function openPersonaPanel() {
+async function openPersonaPanel(tab) {
     const id = await personaId();
     const name = personaName(id);
     return openMediaPanel({
-        name, key: `persona:${id}`, folder: name,
+        name, key: `persona:${id}`, folder: name, tab,
         load: async () => getPersonaProfile(id), save: async patch => setPersonaProfile(id, patch),
     });
 }
@@ -699,7 +699,7 @@ jQuery(async () => {
     $('.form_create_bottom_buttons_block').first().append('<div id="fm_char_button" class="menu_button fa-solid fa-images displayNone" title="Media: references, appearance, gallery"></div>');
     $('#fm_char_button').on('click', () => openCharacterPanel(ctx().characterId));
     $('.persona_controls_buttons_block').first().append('<div id="fm_persona_button" class="menu_button fa-solid fa-images" title="Media: references, appearance, gallery"></div>');
-    $('#fm_persona_button').on('click', openPersonaPanel);
+    $('#fm_persona_button').on('click', () => openPersonaPanel());
     $('#rm_group_buttons').append('<div id="fm_group_button" class="menu_button fa-solid fa-clapperboard" title="Media Studio: director and Setting card"></div>');
     $('#fm_group_button').on('click', openGroupPanel);
     refreshCharButton();

@@ -287,6 +287,7 @@ async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> 
     first = await render(job, step_one, row)
     finish_row(row, first, step_one)
     base, _existing = assets.store(first.data, "frame")
+    aspect = follow_opening_frame(finish_model, base, aspect)    # at the 1k price the scene step takes the references' shape
 
     faces = pick_references(people, ["face_1", "face_2"], finish_model.max_refs - 1)
     final = RenderRequest(option=finish_model, mode="reference", prompt=face_edit_prompt(faces, finish_model),

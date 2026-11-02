@@ -7,9 +7,10 @@ const MOVE_PX = 10;
 
 export function fixTouchAutocomplete() {
     let pending = null;
+    let replaying = false;
 
     document.addEventListener('pointerdown', (e) => {
-        if (e.pointerType === 'mouse' || !e.isTrusted) return;
+        if (e.pointerType === 'mouse' || replaying) return;
         const item = e.target.closest?.('.autoComplete li');
         if (!item) return;
         // Capture phase: SillyTavern's own listener sits on the item and never sees this touch.
@@ -29,6 +30,11 @@ export function fixTouchAutocomplete() {
         const { item } = pending;
         pending = null;
         if (!item.isConnected) return;
-        item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true }));
+        replaying = true;
+        try {
+            item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', isPrimary: true }));
+        } finally {
+            replaying = false;
+        }
     }, true);
 }
