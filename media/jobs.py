@@ -287,11 +287,34 @@ class JobRunner:
                 logger.warning(f"🎬 file sweep failed: {e}")
 
 
+def can_cancel(row: Dict[str, Any]) -> bool:
+    """Whether cancelling this job would stop anything.
+
+    True before it reaches a provider, so a queued or still-planning job can always be called off
+    before it costs anything, and true on a provider with a real cancel API. False once one without
+    has started: the file is coming and is already paid for, so cancelling would only bin it.
+    """
+    if row["status"] in TERMINAL or not row.get("provider_task_id"):
+        return True
+    provider = PROVIDERS.get(row.get("provider") or "")
+    return bool(provider and provider.cancellable)
+
+
+def no_cancel_reason(row: Dict[str, Any]) -> str:
+    """Why this job can't be called off, or '' when it can. A finished row is a no-op, not a refusal."""
+    if row["status"] in TERMINAL or can_cancel(row):
+        return ""
+    label = PROVIDER_LABELS.get(row.get("provider") or "", row.get("provider") or "This provider").split(" (")[0]
+    return (f"{label} has no way to stop a render once it has started, so this one finishes and is charged "
+            "either way. The bridge waits for it rather than paying for a file and throwing it away.")
+
+
 def public_job(row: Dict[str, Any]) -> Dict[str, Any]:
     plan = json.loads(row["plan_json"]) if row.get("plan_json") else {}
     parent = row.get("parent_id")
     return {
         "id": row["id"], "kind": row["kind"], "status": row["status"], "message": row.get("message"), "error": row.get("error"),
+        "can_cancel": can_cancel(row),
         "elapsed": (row.get("finished_at") or int(time.time())) - row["created_at"],
         "file_url": f"/media/files/{row['id']}" if row["status"] == "done" and row.get("file_path") else None,
         "keyframe_url": f"/media/files/{parent}" if parent and row["kind"] == "video" else None,

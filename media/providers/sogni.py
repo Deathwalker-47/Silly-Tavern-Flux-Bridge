@@ -44,6 +44,7 @@ def consent_message(error: Exception) -> Optional[str]:
 class Sogni(Provider):
     name = "sogni"
     resumable = False
+    cancellable = True
     poll_seconds = 0.2
     NETWORKS = ("fast", "relaxed")
 

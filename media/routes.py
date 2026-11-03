@@ -16,7 +16,7 @@ from . import assets, catalog, db, director, insights, keys, lora_files, loras, 
 from .catalog import IMAGE_FAMILIES, PROVIDER_LABELS, Route, VIDEO_FAMILIES
 from .config import MediaConfig
 from .helper import helper
-from .jobs import public_job, runner
+from .jobs import no_cancel_reason, public_job, runner
 from .providers import PROVIDERS, provider_configured
 from .references import DEFAULT_ORDER
 
@@ -226,10 +226,13 @@ async def get_job(job_id: str, request: Request = None):
 @router.post("/media/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, request: Request = None):
     _check_token(request)
-    row = runner.cancel(job_id)
+    row = db.generation(job_id)
     if not row:
         raise HTTPException(status_code=404, detail="Unknown job")
-    return public_job(row)
+    refusal = no_cancel_reason(row)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
+    return public_job(runner.cancel(job_id) or row)
 
 
 @router.post("/media/jobs/{job_id}/ack")

@@ -52,6 +52,7 @@ class RenderResult:
 class Provider:
     name = ""
     resumable = True        # polling can carry on after a bridge restart
+    cancellable = False     # cancel() can really stop a render that has started, and stop the billing
     poll_seconds = 3.0
 
     @property
