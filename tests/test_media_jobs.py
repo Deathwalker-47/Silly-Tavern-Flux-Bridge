@@ -323,7 +323,9 @@ class CancelTests(JobCase):
         self.assertFalse(can_cancel(started))
         self.assertTrue(can_cancel({**started, "provider": "replicate"}), "Replicate can stop a prediction")
         self.assertTrue(can_cancel({**started, "provider": "sogni"}), "Sogni can stop a render and its billing")
-        self.assertTrue(can_cancel({**started, "status": "done"}), "a finished job is a no-op, not a refusal")
+        self.assertFalse(can_cancel({**started, "status": "done"}), "there is nothing left to stop")
+        self.assertEqual(no_cancel_reason({**started, "status": "done"}), "",
+                         "but the route still takes it: a finished job is a no-op, not a refusal")
 
     def test_the_refusal_names_the_provider_and_why(self):
         reason = no_cancel_reason({"id": "j2", "status": "rendering", "provider": "runware", "provider_task_id": "t1"})

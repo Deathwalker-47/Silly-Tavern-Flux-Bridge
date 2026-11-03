@@ -288,13 +288,15 @@ class JobRunner:
 
 
 def can_cancel(row: Dict[str, Any]) -> bool:
-    """Whether cancelling this job would stop anything.
+    """Whether cancelling this job would stop anything, which is what the browser offers on.
 
     True before it reaches a provider, so a queued or still-planning job can always be called off
     before it costs anything, and true on a provider with a real cancel API. False once one without
-    has started: the file is coming and is already paid for, so cancelling would only bin it.
+    has started, because the file is coming and is already paid for, and false once the job is over.
     """
-    if row["status"] in TERMINAL or not row.get("provider_task_id"):
+    if row["status"] in TERMINAL:
+        return False
+    if not row.get("provider_task_id"):
         return True
     provider = PROVIDERS.get(row.get("provider") or "")
     return bool(provider and provider.cancellable)
