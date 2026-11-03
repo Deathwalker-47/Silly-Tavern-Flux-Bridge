@@ -91,6 +91,16 @@
     margin: 0;
 }
 
+.fm-people .fm-find-people {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.fm-people .fm-busy {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
 .fm-people-hint {
     display: block;
     margin-bottom: 6px;
