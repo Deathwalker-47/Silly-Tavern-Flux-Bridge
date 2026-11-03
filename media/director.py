@@ -227,16 +227,16 @@ def minor_block(plan: Plan, people: Sequence[Person]) -> Optional[str]:
 DECIDE_SYSTEM = """You are the media director for a roleplay chat between {user} and {char}.
 After {char}'s latest message, decide whether the scene also gets a photo or a short video right now.
 
-Send media whenever the scene gives a real reason to see something. Many moments do, for example:
-- anyone asks for, takes, sends or shows a photo, selfie or video. That includes {user} photographing or filming {char}: show the picture that was taken.
-- {char} says they'll send something, or shows off an outfit, a look, their body, a place or an object.
-- a new place, a new outfit, someone arriving, a change of scene, time of day or weather.
-- a visual, dramatic, romantic or intimate moment, a reaction worth seeing, a reveal.
-- {char} describes what they are doing, wearing or seeing in a way you could photograph.
-Choose "none" only when there is nothing new to see: plain talk, logistics, or the same scene with nothing changed since the last media. Never send media at random.
+Media is an event in the story, not a running illustration of it. Most messages get none. Send one only when this moment gives a reason the last one didn't:
+- someone asks for, takes, sends or shows a photo, selfie or video. That includes {user} photographing or filming {char}: show the picture that was taken.
+- {char} says they'll send something, or deliberately shows {user} an outfit, a look, their body, a place or an object.
+- the scene turns over: a new place, a new outfit, someone arriving, a jump in time or weather, something revealed. Send it once, for the change itself, not again while it lasts.
+The first two are reasons on their own. The third counts only when the change lands in this message, not when it carried over from earlier ones.
 
-- image: the default when there is something to see.
-- video: when motion matters (dancing, a gesture, a reveal, something happening) or a video was asked for or is being filmed. Videos cost more.
+Everything else is "none", however well it is written: a gesture, an expression, a feeling, a scene already shown, a place already pictured, or a moment that merely could be photographed. If you find yourself weighing it up, answer "none". Another moment will come, and media sent without a reason is worse than media missed.
+
+- image: the normal choice when something is sent.
+- video: when movement is the point (dancing, a gesture being performed, something unfolding) or a video was asked for or is being filmed. Videos cost far more, so choose image unless the motion is the reason.
 {context}{limits}
 Reply with only a JSON object: {{"action": "none|image|video", "reason": "<10 words>"}}"""
 
@@ -259,7 +259,7 @@ async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
     context = ""
     if "since_image" in body or "since_video" in body:
         context += (f"\nLast photo: {_ago(body.get('since_image'))}. Last video: {_ago(body.get('since_video'))}."
-                    " Use this only to avoid repeating the same shot, not as a quota.\n")
+                    " The more recent it is, the stronger the reason has to be, and never send the same shot twice.\n")
     if body.get("call"):
         context += (f"\n{user} and {char} are on a live voice call: {char}'s lines are spoken, not texted. People still send photos and"
                     f" videos while on the phone, so the same reasons apply, and anything {char} says they're sending should arrive.\n")

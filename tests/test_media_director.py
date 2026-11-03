@@ -232,7 +232,20 @@ class PlanCallTests(MediaCase):
         self.assertIn("Sam photographing or filming Maya", seen[0])
         self.assertNotIn("voice call", seen[1])
         self.assertNotIn("Last photo", seen[1])
-        self.assertNotIn("Most messages", seen[1], "no longer told that media is rare")
+        self.assertIn("the stronger the reason has to be", seen[0],
+                      "recent media raises the bar; it used to be handed over and then ignored")
+
+    def test_decide_asks_for_a_change_rather_than_illustrating_every_message(self):
+        """Scene-based rules alone made the director fire on almost every reply: anything written
+        vividly reads as 'something to see'. The bar is a change that lands in this message, and
+        the extension's cooldown keeps it from being asked again too soon."""
+        rules = director.DECIDE_SYSTEM
+        self.assertIn("Most messages get none", rules)
+        self.assertIn('answer "none"', rules, "the tie goes to sending nothing")
+        self.assertNotIn("the default when there is something to see", rules)
+        self.assertNotIn("Many moments do", rules)
+        for excuse in ("a gesture", "an expression", "a feeling", "a scene already shown"):
+            self.assertIn(excuse, rules, f"{excuse} is named as a non-reason")
 
     def test_decide_names_the_person_on_the_call_not_the_story_card(self):
         seen = []
