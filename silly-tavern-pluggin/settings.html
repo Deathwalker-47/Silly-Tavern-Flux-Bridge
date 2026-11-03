@@ -75,7 +75,11 @@
             </label>
             <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoImages"> The director may send images</label>
             <label class="checkbox_label"><input type="checkbox" data-fm="allowAutoVideos"> The director may send videos</label>
-            <small class="fm-hint">No waiting between media: the director sends a photo or video whenever the scene gives a reason to, voice calls included.</small>
+            <div class="fm-grid">
+                <label>Messages between images <small>(0 = no wait)</small> <input data-fm="imageCooldown" class="text_pole" type="number" min="0" max="50"></label>
+                <label>Messages between videos <small>(0 = no wait)</small> <input data-fm="videoCooldown" class="text_pole" type="number" min="0" max="100"></label>
+            </div>
+            <small class="fm-hint">The cooldown counts character messages since the last photo or video and holds back the director only. The buttons and <code>/fmimage</code> always work, and what they make restarts the count. "Every turn" ignores it.</small>
             <div class="fm-grid">
                 <label>Max images a day <small>(0 = no limit)</small> <input data-fm="dailyImageCap" class="text_pole" type="number" min="0" max="1000"></label>
                 <label>Max videos a day <small>(0 = no limit)</small> <input data-fm="dailyVideoCap" class="text_pole" type="number" min="0" max="500"></label>

@@ -26,6 +26,8 @@ const DEFAULTS = Object.freeze({
     autoMedia: 'director',          // off | director | every_turn
     allowAutoImages: true,
     allowAutoVideos: true,
+    imageCooldown: 4,               // character messages the director waits before another one (0 = no wait)
+    videoCooldown: 4,
     dailyImageCap: 60,              // 0 = unlimited
     dailyVideoCap: 10,              // 0 = unlimited
     image: { provider: 'runware', family: 'flux-lora', variant: '' },
@@ -41,7 +43,7 @@ const DEFAULTS = Object.freeze({
     debug: false,
 });
 const RETIRED = ['imageMode', 'imageSize', 'steps', 'cfg', 'helperModel', 'videoProvider', 'videoFamily', 'videoVariant',
-    'videoDuration', 'videoResolution', 'useTwoImages', 'directorModel', 'imageCooldown', 'videoCooldown'];
+    'videoDuration', 'videoResolution', 'useTwoImages', 'directorModel'];
 const SKIP_TYPES = new Set(['first_message', 'swipe', 'continue', 'impersonate', 'quiet']);
 
 function settings() {
@@ -147,6 +149,16 @@ async function jobBody(kind, messageId, origin, request) {
 
 const busy = new Set(); // "image:12" / "video:12" so a message isn't sent to the bridge twice at once
 
+/**
+ * Character messages since the last media of this kind. A job still running counts as just sent:
+ * it isn't on a message yet, so without this the next reply would start a second one before the
+ * first had arrived, and a slow video could collect a queue behind it.
+ */
+function sinceMedia(kind) {
+    for (const key of busy) if (key.startsWith(`${kind}:`)) return 0;
+    return messagesSinceMedia(kind);
+}
+
 async function generate(kind, messageId, { origin = 'manual', request = '' } = {}) {
     const key = `${kind}:${messageId}`;
     if (busy.has(key)) return;
@@ -194,6 +206,19 @@ async function reportFailure(job, { away = false } = {}) {
 
 let warnedDirector = false;
 
+/**
+ * Why the director may not send this kind right now, or '' when it may. The cooldown counts
+ * character messages since the last photo or video and holds back auto media only: the chat bar,
+ * the message buttons and /fmimage always generate, and what they make restarts the count.
+ */
+function autoBlock({ on, ready, used, cap, cooldown, since }) {
+    if (!on) return 'off';
+    if (!ready) return 'no_provider';
+    if (!underCap(used, cap)) return 'cap';
+    if (since < Number(cooldown)) return 'cooldown';
+    return '';
+}
+
 async function autoMedia(messageId, mode) {
     const s = settings();
     const c = ctx();
@@ -214,17 +239,23 @@ async function autoMedia(messageId, mode) {
         return generate('image', messageId, { origin: 'auto' });
     }
 
-    // No cooldown: the director sends media whenever the scene calls for it. Daily caps still hold.
-    const allowImage = s.allowAutoImages && imageReady && underCap(u.images, s.dailyImageCap);
-    const allowVideo = s.allowAutoVideos && videoReady && underCap(u.videos, s.dailyVideoCap);
-    if (!allowImage && !allowVideo) return track('auto_skip', { reason: 'cap' });
+    // The cooldown and the daily caps are settled here, not left to the director: a model asked to
+    // pace itself doesn't, and a kind that is out of play costs nothing to rule out before the call.
+    const since = { image: sinceMedia('image'), video: sinceMedia('video') };
+    const imageBlock = autoBlock({ on: s.allowAutoImages, ready: imageReady, used: u.images, cap: s.dailyImageCap, cooldown: s.imageCooldown, since: since.image });
+    const videoBlock = autoBlock({ on: s.allowAutoVideos, ready: videoReady, used: u.videos, cap: s.dailyVideoCap, cooldown: s.videoCooldown, since: since.video });
+    if (imageBlock && videoBlock) {
+        return track('auto_skip', { reason: [imageBlock, videoBlock].includes('cooldown') ? 'cooldown' : imageBlock });
+    }
+    const allowImage = !imageBlock;
+    const allowVideo = !videoBlock;
     try {
         const d = await bridge('/director/decide', {
             method: 'POST',
             body: {
                 chat_id: c.getCurrentChatId(), reply: String(msg.mes || ''), history: history(messageId), char: char?.name || c.name2, user: c.name1,
                 allow_image: allowImage, allow_video: allowVideo,
-                since_image: finiteOrNull(messagesSinceMedia('image')), since_video: finiteOrNull(messagesSinceMedia('video')),
+                since_image: finiteOrNull(since.image), since_video: finiteOrNull(since.video),
                 call: !!callWith(), call_with: callWith() || undefined,
             },
         });
