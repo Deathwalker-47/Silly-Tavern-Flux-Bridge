@@ -216,6 +216,12 @@
     color: #e5484d;
 }
 
+.fm-nocancel {
+    opacity: 0.6;
+    font-size: 0.9em;
+    cursor: help;
+}
+
 #fm_video_modes {
     display: flex;
     flex-direction: column;

@@ -86,6 +86,7 @@ def prediction_output(prediction: Dict) -> Optional[str]:
 
 class Replicate(Provider):
     name = "replicate"
+    cancellable = True
 
     @property
     def configured(self) -> bool:

@@ -77,6 +77,18 @@ export function messageIndexByKey(key) {
 
 // ---- status line ----
 
+const NO_CANCEL_TITLE = 'This provider has no way to stop a render once it has started: it finishes and is charged either way, '
+    + 'so the bridge waits for the file instead of binning one you have paid for.';
+
+/**
+ * Cancel while cancelling still does something. The bridge works out when that is and says so in
+ * can_cancel, because only it knows whether the render has reached a provider and whether that
+ * provider has a cancel API. An older bridge sends nothing, and then the button stays as it was.
+ */
+const cancelHtml = (state) => (state.can_cancel === false
+    ? `<span class="fm-nocancel" title="${esc(NO_CANCEL_TITLE)}"><i class="fa-solid fa-circle-info"></i> can't be stopped</span>`
+    : '<span class="fm-cancel menu_button_icon" title="Cancel"><i class="fa-solid fa-xmark"></i> Cancel</span>');
+
 function statusLine(job) {
     const id = `fm-status-${job.id}`;
     const place = () => {
@@ -88,9 +100,12 @@ function statusLine(job) {
         el = document.createElement('div');
         el.id = id;
         el.className = 'fm-status';
-        el.innerHTML = '<span class="fm-status-text"></span> <span class="fm-cancel menu_button_icon" title="Cancel"><i class="fa-solid fa-xmark"></i> Cancel</span>';
-        el.querySelector('.fm-cancel').addEventListener('click', (event) => {
-            event.currentTarget.textContent = 'Cancelling…';
+        el.innerHTML = '<span class="fm-status-text"></span> <span class="fm-status-action"></span>';
+        // Delegated: the action is redrawn on every poll, so a handler bound to the button would go with it.
+        el.addEventListener('click', (event) => {
+            const button = event.target.closest('.fm-cancel');
+            if (!button) return;
+            button.textContent = 'Cancelling…';
             cancelJob(job.id);
         });
         block.appendChild(el);
@@ -103,6 +118,12 @@ function statusLine(job) {
             if (!el) return;
             const icon = state.kind === 'video' ? 'fa-film' : 'fa-image';
             el.querySelector('.fm-status-text').innerHTML = `<i class="fa-solid ${icon} fa-beat-fade"></i> ${esc(state.message || state.status)} · ${state.elapsed ?? 0}s`;
+            const action = el.querySelector('.fm-status-action');
+            const next = cancelHtml(state);
+            if (action.dataset.shape !== next) {           // leaves "Cancelling…" alone between polls
+                action.dataset.shape = next;
+                action.innerHTML = next;
+            }
         },
         remove: () => {
             announce(job.chat_id, '');

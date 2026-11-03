@@ -9,7 +9,7 @@ import unittest.mock
 from media_support import MediaCase, noisy_jpeg, run
 from media import assets, catalog, db, director, pipelines, telemetry
 from media.config import MediaConfig
-from media.jobs import JobRunner, TERMINAL, public_job
+from media.jobs import JobRunner, TERMINAL, can_cancel, no_cancel_reason, public_job
 from media.providers import PROVIDERS
 from media.providers.base import RenderResult
 from media.providers.mock import Mock
@@ -313,6 +313,41 @@ class CancelTests(JobCase):
         async def scenario():
             return self.runner.cancel(row["id"])
         self.assertEqual(run(scenario())["status"], "done")
+
+    def test_cancel_is_only_offered_while_it_would_stop_something(self):
+        """A render already with a provider that has no cancel API finishes and is charged whatever
+        the browser does, so the button would only hide a picture the user had paid for."""
+        waiting = {"id": "j1", "status": "queued", "provider": "mock", "provider_task_id": None}
+        started = {"id": "j2", "status": "rendering", "provider": "mock", "provider_task_id": "t1"}
+        self.assertTrue(can_cancel(waiting), "nothing has been spent yet")
+        self.assertFalse(can_cancel(started))
+        self.assertTrue(can_cancel({**started, "provider": "replicate"}), "Replicate can stop a prediction")
+        self.assertTrue(can_cancel({**started, "provider": "sogni"}), "Sogni can stop a render and its billing")
+        self.assertTrue(can_cancel({**started, "status": "done"}), "a finished job is a no-op, not a refusal")
+
+    def test_the_refusal_names_the_provider_and_why(self):
+        reason = no_cancel_reason({"id": "j2", "status": "rendering", "provider": "runware", "provider_task_id": "t1"})
+        self.assertIn("Runware", reason)
+        self.assertIn("charged either way", reason)
+        self.assertEqual(no_cancel_reason({"id": "j3", "status": "rendering", "provider": "sogni", "provider_task_id": "t1"}), "")
+        self.assertEqual(no_cancel_reason({"id": "j4", "status": "failed", "provider": "runware", "provider_task_id": "t1"}), "")
+
+    def test_the_job_the_browser_polls_says_whether_cancel_would_work(self):
+        async def scenario():
+            with unittest.mock.patch.object(MediaConfig, "MOCK_RENDER_SECONDS", 30):
+                row = self.runner.create({"kind": "image", "selection": IMAGE, "prompt": "x"})
+                before = public_job(db.generation(row["id"]))["can_cancel"]
+                for _ in range(500):
+                    if db.generation(row["id"])["provider_task_id"]:
+                        break
+                    await asyncio.sleep(0.01)
+                after = public_job(db.generation(row["id"]))["can_cancel"]
+                self.runner.cancel(row["id"])
+                await asyncio.sleep(0.05)
+                return before, after
+        before, after = run(scenario())
+        self.assertTrue(before, "still queued, so calling it off costs nothing")
+        self.assertFalse(after, "the mock provider has no cancel API")
 
 
 class RestartTests(JobCase):

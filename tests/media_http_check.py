@@ -204,11 +204,18 @@ def main():
         assert json.loads(lines[0])["type"] == "generation"
         assert client.get("/media/balances", headers=AUTH).json() == {"balances": []}
 
-        # cancel
+        # cancel: allowed while the job is still queued, refused once the mock provider has it,
+        # since a provider with no cancel API renders on and bills whatever the browser does.
+        # Which of the two happens is a race against the render, so both are checked.
         slow = bridge.app  # the app object is kept alive by the client; the job below finishes or cancels inside this block
         started = client.post("/media/jobs", json={"kind": "image", "selection": {"provider": "mock", "family": "seedream-4.5"}, "prompt": "x"}, headers=AUTH)
-        cancelled = client.post(f"/media/jobs/{started.json()['job_id']}/cancel", headers=AUTH).json()
-        assert cancelled["status"] in ("cancelled", "done"), cancelled
+        job_id = started.json()["job_id"]
+        assert "can_cancel" in client.get(f"/media/jobs/{job_id}", headers=AUTH).json(), "the browser is told whether to offer it"
+        stop = client.post(f"/media/jobs/{job_id}/cancel", headers=AUTH)
+        if stop.status_code == 409:
+            assert "no way to stop" in stop.json()["detail"], stop.json()
+        else:
+            assert stop.json()["status"] in ("cancelled", "done"), stop.json()
         assert slow
 
         # keys: nobody gets one back, and no real provider sees a fake one
