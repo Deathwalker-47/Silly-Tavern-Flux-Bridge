@@ -17,7 +17,7 @@ from .config import MediaConfig
 logger = logging.getLogger(__name__)
 
 FIELDS = {"runware": "RUNWARE_API_KEY", "nanogpt": "NANOGPT_API_KEY", "sogni": "SOGNI_API_KEY",
-          "replicate": "REPLICATE_API_TOKEN", "pixeldojo": "PIXELDOJO_API_KEY"}
+          "replicate": "REPLICATE_API_TOKEN", "pixeldojo": "PIXELDOJO_API_KEY", "huggingface": "HF_TOKEN"}
 
 _changed: Callable[[], None] = lambda: None
 

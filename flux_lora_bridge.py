@@ -65,7 +65,7 @@ def upload_lora_to_runware(hf_url, runware_api_key, arch):
         "uniqueIdentifier": url_hash,
         "name": model_name,
         "version": "1.0",
-        "downloadURL": hf_url,
+        "downloadURL": lora_files.provider_url(hf_url),   # a private file goes as a link on this bridge
         "defaultWeight": 1.0,
         "private": True
     }]
@@ -79,11 +79,12 @@ def upload_lora_to_runware(hf_url, runware_api_key, arch):
         # Runware accepts a dead link ("model re-processing") and the LoRA just never
         # becomes usable, so catch renamed/deleted files here with a clear message.
         if hf_url.startswith(("http://", "https://")):
-            probe = httpx.head(hf_url, follow_redirects=True, timeout=15).status_code
+            probe = httpx.head(hf_url, headers=lora_files.auth_headers(hf_url), follow_redirects=True, timeout=15).status_code
             if probe in (404, 410):
                 raise Exception(f"LoRA file not found at its URL (HTTP {probe}); was it renamed or deleted?")
             if probe in (401, 403):
-                raise Exception(f"LoRA file isn't public (HTTP {probe}), so Runware can't download it")
+                raise Exception(f"HF_TOKEN can't read this LoRA file (HTTP {probe})" if lora_files.auth_headers(hf_url)
+                                else f"LoRA file isn't public (HTTP {probe}). Set HF_TOKEN so the bridge can hand it to Runware")
 
         logger.info(f"🌐 [Runware] Uploading {model_name} with AIR: {air_id}")
 
@@ -312,7 +313,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 import media as ms  # helper LLM and Replicate client; the rest of Media Studio is in media/
-from media import keys as media_keys, loras as media_loras, routes as media_routes
+from media import keys as media_keys, lora_files, loras as media_loras, routes as media_routes
 from media.jobs import runner as media_jobs
 from lora_dict import check_unique_urls, flat_entry, migrate_dict
 
@@ -333,12 +334,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
-def _prompt_hash(text: str) -> str:
-    """Short stable hash for logging without leaking prompt text."""
-    if not text:
-        return "0"*12
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 logger = logging.getLogger(__name__)
 
@@ -2471,28 +2466,6 @@ multi_char_pipeline = MultiCharPipeline(
 # ============================================
 # API MODELS
 # ============================================
-class Txt2ImgRequest(BaseModel):
-    prompt: str = Field(default="", description="Prompt")
-    negative_prompt: str = Field(default="", description="Negative prompt")
-    steps: int = Field(default=40, description="Sampling steps")
-    cfg_scale: float = Field(default=3.5, description="CFG scale")
-    width: int = Field(default=1024, description="Image width")
-    height: int = Field(default=1024, description="Image height")
-    seed: int = Field(default=-1, description="Seed (-1 for random)")
-    batch_size: int = Field(default=1)
-    n_iter: int = Field(default=1)
-    sampler_name: str = Field(default="Euler a")
-    sampler_index: str = Field(default="Euler a")
-    enable_hr: bool = Field(default=False)
-    denoising_strength: float = Field(default=0.7)
-    restore_faces: bool = Field(default=False)
-    tiling: bool = Field(default=False)
-    override_settings: dict = Field(default_factory=dict)
-    override_settings_restore_afterwards: bool = Field(default=True)
-    # Multi-char metadata from plugin
-    character_prompts: dict = Field(default_factory=dict, description="Map of character name to their SD prompt/trigger words")
-    visible_characters: list = Field(default_factory=list, description="List of character names visible in recent chat")
-
 class EditRequest(BaseModel):
     image: str = Field(default="", description="Image to edit: data URI, base64, http(s) URL or Runware image UUID")
     instruction: str = Field(default="", description="Natural-language edit instruction, used verbatim")
@@ -2513,13 +2486,6 @@ class ImmichEditRequest(BaseModel):
     steps: Optional[int] = Field(default=None, description="Only honoured by Kontext [dev]")
     cfg_scale: Optional[float] = Field(default=None, description="Only honoured by Kontext [dev]")
     model: Optional[str] = Field(default=None, description="Override the Kontext model AIR id")
-
-
-class Txt2ImgResponse(BaseModel):
-    images: list[str] = Field(description="Base64-encoded images")
-    image_urls: list[str] = Field(default_factory=list, description="Public fetchable URLs for the generated images")
-    parameters: dict = Field(description="Generation parameters")
-    info: str = Field(description="Generation info JSON string")
 
 
 # ---- Media Studio ----
@@ -2595,7 +2561,7 @@ async def manual_reset():
 
 @app.get("/images/{image_id}")
 async def get_image(image_id: str):
-    """Serve a generated image by id. URLs are returned in Txt2ImgResponse.image_urls
+    """Serve a generated image by id. URLs are returned in the /edit response's image_urls
     and stay valid for Config.IMAGE_STORE_TTL seconds after generation."""
     from fastapi.responses import Response  # imported lazily; not part of the test stubs
     entry = image_store.get(image_id.rsplit(".", 1)[0])  # tolerate an optional .ext suffix
@@ -2729,8 +2695,9 @@ def _immich_media_response(data: bytes, content_type: str):
 
 
 @app.get("/immich/status")
-async def immich_status():
+async def immich_status(http_request: Request = None):
     """Whether the bridge can currently reach Immich, and where edits are filed."""
+    _check_edit_token(http_request)  # every /immich route: the bridge is public and these are your photos
     if not immich_client.configured:
         return JSONResponse({"configured": False, "reachable": False,
                              "detail": "Set IMMICH_BASE_URL and IMMICH_API_KEY on the bridge"})
@@ -2749,8 +2716,9 @@ async def immich_status():
 
 
 @app.get("/immich/albums")
-async def immich_albums():
+async def immich_albums(http_request: Request = None):
     """List albums, trimmed to what a picker needs."""
+    _check_edit_token(http_request)
     try:
         albums = await immich_client.list_albums()
     except ImmichUnavailable as e:
@@ -2763,8 +2731,9 @@ async def immich_albums():
 
 
 @app.get("/immich/albums/{album_id}")
-async def immich_album_assets(album_id: str):
+async def immich_album_assets(album_id: str, http_request: Request = None):
     """Image assets inside one album."""
+    _check_edit_token(http_request)
     try:
         album = await immich_client.get_album(album_id)
     except ImmichUnavailable as e:
@@ -2779,8 +2748,9 @@ async def immich_album_assets(album_id: str):
 
 
 @app.get("/immich/assets")
-async def immich_recent_assets(page: int = 1, size: int = 60):
+async def immich_recent_assets(page: int = 1, size: int = 60, http_request: Request = None):
     """Recent images, newest first — the default view for a picker."""
+    _check_edit_token(http_request)
     try:
         result = await immich_client.search_assets(page=page, size=min(max(size, 1), 200))
     except ImmichUnavailable as e:
@@ -2794,7 +2764,8 @@ async def immich_recent_assets(page: int = 1, size: int = 60):
 
 
 @app.get("/immich/assets/{asset_id}/thumbnail")
-async def immich_asset_thumbnail(asset_id: str, size: str = "preview"):
+async def immich_asset_thumbnail(asset_id: str, size: str = "preview", http_request: Request = None):
+    _check_edit_token(http_request)
     try:
         data, content_type = await immich_client.fetch_media(asset_id, "thumbnail", size)
     except ImmichUnavailable as e:
@@ -2803,7 +2774,8 @@ async def immich_asset_thumbnail(asset_id: str, size: str = "preview"):
 
 
 @app.get("/immich/assets/{asset_id}/original")
-async def immich_asset_original(asset_id: str):
+async def immich_asset_original(asset_id: str, http_request: Request = None):
+    _check_edit_token(http_request)
     try:
         data, content_type = await immich_client.fetch_media(asset_id, "original")
     except ImmichUnavailable as e:
@@ -3037,236 +3009,16 @@ async def edit_ui():
     return HTMLResponse(content=EDIT_UI_HTML)
 
 
+# ============================================
+# RETIRED IMAGE ENDPOINTS
+# ============================================
+# Neither took a token and the bridge is public, so anyone who found it could spend
+# provider credits and use every LoRA. Media Studio (POST /media/jobs) replaced both.
+
 @app.post("/sdapi/v1/txt2img")
-async def txt2img(request: Txt2ImgRequest):
-    """AUTOMATIC1111-compatible txt2img with helper LLM summarization
-    
-    DELAY BREAKDOWN:
-    - LoRA matching: 100-200ms
-    - DeepSeek summarization: 1-2.5 seconds (network API call)
-    - Prompt building: 50ms
-    - Provider generation: 15-30 seconds (main bottleneck)
-    ---
-    TOTAL: 16-33 seconds
-    (1-2.5s is LLM, rest is image generation)
-    """
-    
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info("📸 NEW GENERATION REQUEST")
-    logger.info("=" * 100)
-    
-    request_start = time.time()
-    
-    # Log input
-    logger.info(f"📝 [Input] Raw Prompt ({len(request.prompt.split())} words): {request.prompt[:200]}..." if len(request.prompt) > 200 else f"📝 [Input] Raw Prompt: {request.prompt}")
-    logger.info(f"📝 [Input] Negative Prompt: {request.negative_prompt}")
-    logger.info(f"📝 [Input] Parameters: steps={request.steps}, cfg={request.cfg_scale}, size={request.width}x{request.height}, seed={request.seed}")
-    if request.visible_characters:
-        logger.info(f"👥 [Input] Visible characters from plugin: {request.visible_characters}")
-    if request.character_prompts:
-        logger.info(f"📎 [Input] Character prompts received for: {list(request.character_prompts.keys())}")
-
-    # Build enriched search text: append visible character names + their SD prompts so
-    # keyword matcher can find LoRAs even when names aren't in the current message body.
-    search_extras = []
-    if request.visible_characters:
-        search_extras.append(" ".join(request.visible_characters))
-    if request.character_prompts:
-        for char_name, sd_prompt in request.character_prompts.items():
-            if sd_prompt:
-                search_extras.append(sd_prompt)
-                logger.info(f"📎 [Input] Injecting SD prompt for {char_name}: {sd_prompt[:80]}")
-    pre_search_prompt = request.prompt + (" " + " ".join(search_extras) if search_extras else "")
-
-    matched_loras = lora_manager.match_loras_by_keywords(pre_search_prompt, request.negative_prompt)
-    char_names = [m["id"] for m in matched_loras]  # or pull from lora_data["name"]
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info("STEP 1: DEEPSEEK V3 SUMMARIZATION")
-    logger.info("=" * 100)
-
-    request_id = uuid.uuid4().hex[:8]
-    prompt_h = _prompt_hash(request.prompt)
-    neg_h = _prompt_hash(request.negative_prompt)
-    logger.info(f"🧾 [Request {request_id}] prompt_hash={prompt_h} neg_hash={neg_h} "
-                f"steps={request.steps} cfg={request.cfg_scale} size={request.width}x{request.height} seed_in={request.seed}")
-
-    summarized_prompt = request.prompt
-    if Config.ENABLE_SUMMARIZATION:
-        summarized_prompt = await deepseek_summarizer.summarize_prompt(request.prompt, Config.SUMMARY_MAX_LENGTH, required_names=char_names )
-        logger.debug(f"📋 [Summary {request_id}] Original words={len(request.prompt.split())} → Summary words={len(summarized_prompt.split())}")
-
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info("STEP 2: LORA MATCHING (ON SUMMARIZED PROMPT)")
-    logger.info("=" * 100)
-
-    lora_start = time.time()
-    matched_loras = lora_manager.match_loras_by_keywords(summarized_prompt, request.negative_prompt)
-    matched_loras = lora_manager.apply_role_caps(matched_loras)
-    lora_time = time.time() - lora_start
-    logger.info(f"⏱️  [Request {request_id}] LoRA matching took {lora_time*1000:.0f}ms; matched={len(matched_loras)}")
-
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info("STEP 3: PROMPT ENHANCEMENT")
-    logger.info("=" * 100)
-    enhance_start = time.time()
-    full_prompt, full_negative = lora_manager.build_enhanced_prompt(summarized_prompt, matched_loras)
-
-    logger.info(f"📝 [Input] Prompt ({len(request.prompt.split())} words): {request.prompt[:200]}..." if len(request.prompt) > 200 else f"📝 [Input] Prompt: {request.prompt}")
-    enhance_time = time.time() - enhance_start
-
-    logger.info(f"⏱️  [Request {request_id}] enhance prompt took {enhance_time*1000:.0f}ms")
-
-    gen_start = time.time()
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info("STEP 4: GENERATION")
-    logger.info("=" * 100)
-
-    seed_used = request.seed if request.seed != -1 else random.randint(0, 2**31 - 1)
-    params = {
-        "steps": request.steps,
-        "cfg_scale": request.cfg_scale,
-        "width": request.width,
-        "height": request.height,
-        "seed": seed_used
-    }
-
-    # ── Multi-character inpainting pipeline ──────────────────────────────
-    if Config.MULTI_CHAR_ENABLED:
-        character_loras = [m for m in matched_loras if m["data"].get("category") == "character"]
-        non_character_loras = [m for m in matched_loras if m["data"].get("category") != "character"]
-
-        if len(character_loras) >= 2:
-            char_count = min(len(character_loras), Config.MULTI_CHAR_MAX)
-            character_loras = character_loras[:char_count]
-            logger.info("")
-            logger.info("=" * 100)
-            logger.info(f"🎭 MULTI-CHARACTER PIPELINE ({char_count} chars)")
-            logger.info("=" * 100)
-            try:
-                image_bytes = await multi_char_pipeline.generate(
-                    original_prompt=request.prompt,
-                    summarized_prompt=summarized_prompt,
-                    character_loras=character_loras,
-                    shared_loras=non_character_loras,
-                    params=params,
-                    request_id=request_id,
-                    negative_prompt=full_negative,
-                )
-                _validate_image_bytes(image_bytes, "MultiChar")
-                total_time = time.time() - request_start
-                base64_image = base64.b64encode(image_bytes).decode("utf-8")
-                image_url = _publish_image_url(image_bytes)
-                info_dict = {
-                    "original_prompt": request.prompt,
-                    "summarized_prompt": summarized_prompt,
-                    "pipeline": "multi_char",
-                    "character_count": char_count,
-                    "seed": seed_used,
-                    "width": params["width"],
-                    "height": params["height"],
-                    "total_time_seconds": round(total_time, 2),
-                    "image_url": image_url,
-                }
-                logger.info(f"✅ [MultiChar {request_id}] Complete in {total_time:.2f}s")
-                if image_url:
-                    logger.info(f"🔗 [MultiChar {request_id}] Public URL: {image_url}")
-                return Txt2ImgResponse(
-                    images=[base64_image],
-                    image_urls=[image_url] if image_url else [],
-                    parameters=info_dict,
-                    info=json.dumps(info_dict),
-                )
-            except Exception as e:
-                logger.warning(
-                    f"🎭 [MultiChar {request_id}] Pipeline failed ({e}), "
-                    "falling back to single-pass"
-                )
-                # Fall through to the single-pass provider loop below
-    # ─────────────────────────────────────────────────────────────────────
-
-    providers = provider_state.get_provider_list()
-    last_error = None
-    
-    for idx, provider in enumerate(providers, 1):
-        try:
-            pre_lora_list = lora_manager.provider_based_lora_url_pruning(matched_loras, provider)
-            max_loras = provider_state.get_max_loras(provider)
-            lora_list = lora_manager.build_lora_list(pre_lora_list, max_loras)
-            
-            logger.info("")
-            logger.info(f"🔄 [Request {request_id}] [Provider {idx}/{len(providers)}] Attempting {provider.upper()}")
-            
-            client = clients.get(provider)
-            if not client:
-                raise Exception(f"Unknown provider: {provider}")
-            
-            image_bytes = await client.generate(full_prompt, full_negative, lora_list, params)
-            _validate_image_bytes(image_bytes, provider)
-
-            logger.info(f"✅ [Request {request_id}] [Provider] SUCCESS with {provider.upper()}")
-
-            total_gen_time = time.time() - gen_start
-            logger.info(f"✅ [Request {request_id}] Total generation took {total_gen_time*1000:.0f}ms")
-            
-            base64_image = base64.b64encode(image_bytes).decode('utf-8')
-            image_url = _publish_image_url(image_bytes)
-
-            total_time = time.time() - request_start
-
-            info_dict = {
-                "original_prompt": request.prompt,
-                "summarized_prompt": summarized_prompt,
-                "final_prompt": full_prompt,
-                "negative_prompt": full_negative,
-                "steps": request.steps,
-                "cfg_scale": request.cfg_scale,
-                "width": request.width,
-                "height": request.height,
-                "seed": seed_used,
-                "provider": provider,
-                "loras_used": len(lora_list),
-                "summarization_enabled": Config.ENABLE_SUMMARIZATION,
-                "total_time_seconds": round(total_time, 2),
-                "image_url": image_url
-            }
-            
-            logger.info("")
-            logger.info("=" * 100)
-            logger.info(f"✅ GENERATION COMPLETE ({provider.upper()})")
-            logger.info(f"⏱️  Total time: {total_time:.2f}s")
-            if image_url:
-                logger.info(f"🔗 Public URL: {image_url}")
-            logger.info("=" * 100)
-            logger.info("")
-
-            return Txt2ImgResponse(
-                images=[base64_image],
-                image_urls=[image_url] if image_url else [],
-                parameters=info_dict,
-                info=json.dumps(info_dict)
-            )
-        
-        except Exception as e:
-            last_error = str(e)
-            logger.error(f"❌ [Provider] FAILED with {provider.upper()}: {last_error}")
-            
-            if idx < len(providers):
-                logger.info(f"🔄 [Provider] Trying next...")
-    
-    # All providers failed
-    error_msg = f"All providers failed. Last error: {last_error}"
-    logger.error("")
-    logger.error("=" * 100)
-    logger.error("❌ GENERATION FAILED")
-    logger.error("=" * 100)
-    logger.error(error_msg)
-    
-    raise HTTPException(status_code=500, detail=error_msg)
+@app.post("/v1/images/generations")
+async def retired_image_endpoint():
+    raise HTTPException(status_code=410, detail="Retired: this endpoint took no token. Generate images with Media Studio.")
 
 
 # ============================================
@@ -3375,118 +3127,6 @@ async def chat_completions(request: Request):
         status_code=501,
         detail="Chat proxy not configured. No backend is currently active.",
     )
-
-
-@app.get("/v1/models")
-async def models():
-    """OpenAI-compatible model listing. Advertises the single image model so
-    OpenAI clients can populate their model picker."""
-    return {
-        "object": "list",
-        "data": [
-            {
-                "id": "flux-dev",
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": "flux-bridge",
-            }
-        ],
-    }
-
-
-# ============================================
-# OPENAI-COMPATIBLE IMAGE GENERATION
-# ============================================
-# Lets OpenAI image clients (POST /v1/images/generations) drive the bridge.
-# Translates the OpenAI request into the existing /sdapi/v1/txt2img pipeline
-# (LoRA matching, summarization, multi-provider fallback) and maps the result
-# back into the OpenAI image-response shape. No existing code is modified.
-
-class OpenAIImageRequest(BaseModel):
-    prompt: str = Field(default="", description="Image prompt")
-    model: str = Field(default="flux-dev", description="Accepted for compatibility; the bridge selects the provider/model")
-    n: int = Field(default=1, description="Number of images to generate")
-    size: str = Field(default="1024x1024", description="WIDTHxHEIGHT, e.g. 1024x1024")
-    response_format: str = Field(default="url", description="'url' or 'b64_json'")
-    # Optional non-standard passthroughs (honored if a client sends them)
-    negative_prompt: str = Field(default="", description="Optional negative prompt")
-    steps: int = Field(default=40, description="Sampling steps")
-    cfg_scale: float = Field(default=3.5, description="CFG scale")
-    seed: int = Field(default=-1, description="Seed (-1 for random)")
-    user: str = Field(default="", description="Accepted and ignored")
-
-
-def _parse_openai_size(size: str):
-    """Parse an OpenAI 'WIDTHxHEIGHT' size string; fall back to 1024x1024."""
-    try:
-        w_str, h_str = str(size).lower().split("x", 1)
-        w, h = int(w_str), int(h_str)
-        if w > 0 and h > 0:
-            return w, h
-    except Exception:
-        pass
-    return 1024, 1024
-
-
-@app.post("/v1/images/generations")
-async def openai_images_generations(request: OpenAIImageRequest):
-    """OpenAI-compatible image generation.
-
-    Maps onto the existing txt2img pipeline and returns the OpenAI image-response
-    shape: ``{"created": <ts>, "data": [{"url"|"b64_json": ...}]}``. With
-    ``response_format="url"`` the bridge's public image URL is used (falling back
-    to a data URI when public hosting is disabled); ``"b64_json"`` returns raw base64.
-    """
-    width, height = _parse_openai_size(request.size)
-    n = max(1, min(int(request.n or 1), 8))  # cap to keep generation bounded
-    want_url = (request.response_format or "url").lower() == "url"
-
-    logger.info("")
-    logger.info("=" * 100)
-    logger.info(f"🧩 [OpenAI] Image request: n={n} size={width}x{height} "
-                f"format={'url' if want_url else 'b64_json'} model={request.model}")
-    logger.info("=" * 100)
-
-    try:
-        data = []
-        for _ in range(n):
-            internal_req = Txt2ImgRequest(
-                prompt=request.prompt,
-                negative_prompt=request.negative_prompt or "",
-                width=width,
-                height=height,
-                steps=request.steps,
-                cfg_scale=request.cfg_scale,
-                seed=request.seed,
-            )
-            result = await txt2img(internal_req)  # reuse the existing pipeline as-is
-
-            b64 = result.images[0] if getattr(result, "images", None) else None
-            urls = getattr(result, "image_urls", None) or []
-            if want_url:
-                if urls:
-                    data.append({"url": urls[0]})
-                elif b64:
-                    data.append({"url": f"data:image/png;base64,{b64}"})
-            elif b64:
-                data.append({"b64_json": b64})
-
-        if not data:
-            raise HTTPException(status_code=500, detail="Image generation produced no output")
-
-        return JSONResponse({"created": int(time.time()), "data": data})
-
-    except HTTPException as e:
-        return JSONResponse(
-            status_code=e.status_code,
-            content={"error": {"message": e.detail, "type": "bridge_error", "code": e.status_code}},
-        )
-    except Exception as e:
-        logger.error(f"🧩 [OpenAI] Image generation failed: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"message": str(e), "type": "bridge_error", "code": 500}},
-        )
 
 
 # ============================================

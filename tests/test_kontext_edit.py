@@ -44,7 +44,7 @@ def install_test_stubs():
 
     class APIRouter:
         def _route(self, *a, **kw): return lambda fn: fn
-        get = post = put = patch = delete = _route
+        get = post = put = patch = delete = api_route = _route
 
 
     fastapi.FastAPI = FastAPI

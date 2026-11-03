@@ -13,9 +13,8 @@ Default port is `7861` unless `BRIDGE_PORT` is set.
 
 ## 2) SillyTavern
 
-- **Source**: Stable Diffusion
-- **SD WebUI URL**: `http://localhost:7861`
-- Enable image generation
+Use Media Studio (`silly-tavern-pluggin/`). SillyTavern's own Image Generation
+can't use the bridge: `/sdapi/v1/txt2img` is retired and answers 410.
 
 ## 3) Core Endpoints
 
@@ -25,11 +24,6 @@ curl http://localhost:7861/
 
 # status
 curl http://localhost:7861/status
-
-# txt2img test
-curl -X POST http://localhost:7861/sdapi/v1/txt2img \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"portrait photo","steps":20,"width":1024,"height":1024}'
 
 # image edit test (FLUX Kontext) — image accepts a URL, data URI, base64 or Runware UUID
 curl -X POST http://localhost:7861/edit \

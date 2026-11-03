@@ -2,20 +2,19 @@
 FLUX LORA BRIDGE - START HERE
 ================================================================================
 
-This repository provides a FastAPI bridge that exposes an AUTOMATIC1111-style
-`/sdapi/v1/txt2img` endpoint for SillyTavern and routes image generation to
-multiple Flux LoRA providers with fallback.
+This repository provides a FastAPI bridge for SillyTavern. Its extension, Media
+Studio, sends chat photos and videos through several providers, with Flux LoRAs
+from `master_lora_dict.json`.
 
-Image provider order (IMAGE_PROVIDER_ORDER):
-1) Runware (primary)
-2) Replicate (Flux multi-LoRA backup)
-Wavespeed, FAL and Together are deprecated (code kept, off by default).
+The AUTOMATIC1111 `/sdapi/v1/txt2img` and OpenAI `/v1/images/generations`
+endpoints are retired and answer 410. They took no token, so anyone who found a
+public bridge could spend provider credits and use every LoRA.
 
 It also includes:
 - Keyword-based LoRA matching from `master_lora_dict.json`
 - Optional prompt summarization via the helper LLM (NanoGPT; Together fallback)
 - Media Studio: chat photos and videos for SillyTavern (see README.md)
-- Stub OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`) for future proxy use
+- A stub OpenAI-compatible endpoint (`/v1/chat/completions`) for future proxy use
 
 --------------------------------------------------------------------------------
 QUICK SETUP
@@ -38,11 +37,9 @@ QUICK SETUP
 SILLYTAVERN SETTINGS
 --------------------------------------------------------------------------------
 
-In SillyTavern:
-- Extensions -> Image Generation
-- Source: Stable Diffusion
-- SD WebUI URL: http://localhost:7861
-- Enable image generation
+Install Media Studio (see README.md). SillyTavern's own Image Generation
+extension can't use the bridge any more, because it needed the retired
+`/sdapi/v1/txt2img`.
 
 --------------------------------------------------------------------------------
 IMPORTANT SECURITY NOTE
@@ -59,9 +56,9 @@ API ENDPOINTS
 - GET  /                         health summary
 - GET  /status                   provider + LoRA status
 - POST /reset                    lightweight reset message endpoint
-- POST /sdapi/v1/txt2img         A1111-compatible txt2img
 - POST /v1/chat/completions      (stub, returns 501 — no proxy configured)
-- GET  /v1/models                (stub, returns empty list)
+- POST /sdapi/v1/txt2img, POST /v1/images/generations   retired, answer 410
+- Media Studio's routes are listed in README.md
 
 --------------------------------------------------------------------------------
 FILES

@@ -40,7 +40,7 @@ def install_test_stubs():
 
     class APIRouter:
         def _route(self, *a, **kw): return lambda fn: fn
-        get = post = put = patch = delete = _route
+        get = post = put = patch = delete = api_route = _route
 
     fastapi.FastAPI = FastAPI
     fastapi.HTTPException = HTTPException
@@ -343,9 +343,24 @@ class RunwareLoraMappingTests(unittest.TestCase):
         fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=403),
                                      post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake):
-            with self.assertRaisesRegex(Exception, "isn't public"):
+            with self.assertRaisesRegex(Exception, "isn't public.*Set HF_TOKEN"):
+                bridge.upload_lora_to_runware(self.URL, "key", "flux")
+            with unittest.mock.patch.object(bridge.ms.MediaConfig, "HF_TOKEN", "hf_test"), \
+                 self.assertRaisesRegex(Exception, "HF_TOKEN can't read"):
                 bridge.upload_lora_to_runware(self.URL, "key", "flux")
         self.assertEqual(posted, [])
+
+    def test_a_private_file_reaches_runware_as_a_bridge_link_and_the_check_sends_the_token(self):
+        heads, posts = [], []
+        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"data": [{"status": "ready"}]})
+        fake = types.SimpleNamespace(head=lambda _url, **kw: heads.append(kw["headers"]) or types.SimpleNamespace(status_code=200),
+                                     post=lambda *_a, **kw: posts.append(kw["json"][0]) or reply, TimeoutException=TimeoutError)
+        with unittest.mock.patch.object(bridge, "httpx", fake), \
+             unittest.mock.patch.multiple(bridge.ms.MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test"):
+            bridge.upload_lora_to_runware(self.URL, "key", "flux")
+        self.addCleanup(bridge.lora_files._links.clear)
+        self.assertEqual(heads, [{"Authorization": "Bearer hf_test"}])
+        self.assertRegex(posts[0]["downloadURL"], r"^https://bridge\.test/lora-files/[\w-]{32}/a\.safetensors$")
 
     def test_flux_air_is_the_plain_url_hash_so_uploads_keep_their_id(self):
         expected = hashlib.sha256(self.URL.lower().encode()).hexdigest()[:12]

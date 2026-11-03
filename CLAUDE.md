@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge that exposes an AUTOMATIC1111-compatible `/sdapi/v1/txt2img` endpoint. It routes image generation requests through a cascading chain of Flux LoRA providers (Runware → Replicate by default; Wavespeed, FAL and Together AI are deprecated but kept) with automatic fallback. Includes a SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`.
+Silly-Tavern-Flux-Bridge is a **Python/FastAPI** bridge behind Media Studio, the SillyTavern plugin (JavaScript) in `silly-tavern-pluggin/`, which sends chat photos and videos through several providers with Flux LoRAs. The old `/sdapi/v1/txt2img` and `/v1/images/generations` endpoints are retired (410): they took no token on a public bridge. Their provider chain (Runware → Replicate; Wavespeed, FAL and Together AI deprecated) is still in `flux_lora_bridge.py` but nothing calls it.
 
 ## Quick Commands
 
@@ -22,7 +22,7 @@ python -m pytest tests/test_provider_response_parsing.py -v
 
 ## Project Structure
 
-- `flux_lora_bridge.py` — Main application (Config, txt2img providers, LoRA matching, core API routes)
+- `flux_lora_bridge.py` — Main application (Config, LoRA matching, Runware LoRA uploads, `/edit`, Immich, core API routes)
 - `media/` — Media Studio's bridge side (see below)
 - `master_lora_dict.json` — LoRA definitions and keyword mappings
 - `lora_dict.py` — dictionary format (one file per architecture under `models`) and its migration
@@ -81,7 +81,9 @@ Return base64 image
 
 ## Important Notes
 
-- `flux_lora_bridge.py` holds the txt2img path and core routes; Media Studio lives in `media/`.
+- `flux_lora_bridge.py` holds `/edit`, Immich and the core routes; Media Studio lives in `media/`.
+- Every route that spends credits or reads private data checks `EDIT_API_TOKEN`. The bridge is public, so a new route needs that check unless it serves files by a random id (`/images/{id}`, `/media/files/{id}`, `/lora-files/{link}/{name}`).
+- LoRA files can be in a private Hugging Face repo: providers get them through `media/lora_files.py` (short-lived bridge links), never with `HF_TOKEN`.
 - LoRA matching is case-insensitive keyword matching against `master_lora_dict.json`.
 - Role-based LoRA caps: character=6, nsfw=4, expression=2, general=2, misc=1.
 - Image generation timeout: 120s (provider calls: 90s).
