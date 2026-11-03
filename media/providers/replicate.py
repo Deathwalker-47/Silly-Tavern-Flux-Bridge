@@ -1,4 +1,6 @@
-"""Replicate: Flux Dev with LoRAs from their Hugging Face links, filter off. No balance API."""
+"""Replicate: Flux Dev with LoRAs by link, filter off. No balance API.
+
+A private Hugging Face file goes in as a short-lived link on the bridge (see lora_files)."""
 
 from __future__ import annotations
 
@@ -8,6 +10,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from .. import lora_files
 from ..config import MediaConfig
 from .base import Provider, RenderRequest, RenderResult, download, error_text, send, sniff_mime
 
@@ -112,7 +115,10 @@ class Replicate(Provider):
 
     async def submit(self, req: RenderRequest) -> str:
         inp = self.build_input(req)
-        req.params = dict(inp)
+        req.params = dict(inp)                 # the history keeps the Hugging Face links
+        if "hf_loras" in inp:
+            # The model has no token input and skips a LoRA it can't download without a word.
+            inp["hf_loras"] = [lora_files.provider_url(url) for url in inp["hf_loras"]]
         prediction = await replicate_create(MediaConfig.REPLICATE_FLUX_MODEL, inp, MediaConfig.REPLICATE_API_TOKEN)
         return prediction["id"]
 

@@ -151,6 +151,7 @@ PROVIDER_LABELS = {
     "replicate": "Replicate",
     "pixeldojo": "PixelDojo (expensive)",
     "mock": "Mock (local test files)",
+    "huggingface": "Hugging Face (private LoRAs)",
 }
 
 IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {

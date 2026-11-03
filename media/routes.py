@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from . import assets, catalog, db, director, insights, keys, loras, telemetry
+from . import assets, catalog, db, director, insights, keys, lora_files, loras, telemetry
 from .catalog import IMAGE_FAMILIES, PROVIDER_LABELS, Route, VIDEO_FAMILIES
 from .config import MediaConfig
 from .helper import helper
@@ -121,7 +121,7 @@ async def save_key(provider: str, request: Request):
         raise HTTPException(status_code=400, detail="That doesn't look like an API key.")
     keys.save(provider, key)
     telemetry.record("account", "key_saved", provider=provider)
-    checked = await balance_of(provider)
+    checked = await (lora_files.check_token() if provider == "huggingface" else balance_of(provider))
     return {"saved": True, "balance": checked.get("amount"), "unit": checked.get("unit"),
             "error": (checked.get("error") or "").replace(key, "") or None}
 
@@ -253,6 +253,15 @@ async def media_file(file_id: str):
     if not row or not row.get("file_path") or not Path(row["file_path"]).exists():
         raise HTTPException(status_code=404, detail="File not found or expired")
     return FileResponse(row["file_path"], media_type=row.get("mime") or "application/octet-stream")
+
+
+@router.api_route("/lora-files/{link}/{name}", methods=["GET", "HEAD"])
+async def lora_file(link: str, name: str, request: Request):
+    """A private LoRA for a provider. No token: the random link is the key, and it expires."""
+    url = lora_files.source(link)
+    if not url:
+        raise HTTPException(status_code=404, detail="Link expired")
+    return await lora_files.stream(url, request.method, request.headers.get("range"))
 
 
 # ---- gallery ----

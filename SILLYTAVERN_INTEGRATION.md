@@ -2,19 +2,17 @@
 
 ## Overview
 
-This bridge presents an AUTOMATIC1111-compatible API (`/sdapi/v1/txt2img`) so
-SillyTavern can use Flux LoRA generation through multiple providers with
-automatic fallback.
+SillyTavern talks to this bridge through Media Studio, the extension in
+`silly-tavern-pluggin/`. The AUTOMATIC1111 `/sdapi/v1/txt2img` endpoint that
+SillyTavern's own Image Generation used is retired and answers 410: it took no
+token, so anyone who found a public bridge could spend provider credits.
 
 ### What it does
-- Matches LoRAs by keywords from `master_lora_dict.json`
-- Optionally summarizes long prompts with the helper LLM (NanoGPT; Together as fallback)
-- Tries providers in IMAGE_PROVIDER_ORDER (default):
-  1. Runware
-  2. Replicate (Flux multi-LoRA)
-  Wavespeed, FAL and Together are deprecated and off by default.
-- Media Studio (the extension in `silly-tavern-pluggin/`) adds chat photos and
-  videos. See "MEDIA STUDIO" in README.md
+- Media Studio sends chat photos and videos on Runware, NanoGPT, Sogni,
+  Replicate or PixelDojo. See "MEDIA STUDIO" in README.md
+- LoRAs and their keywords come from `master_lora_dict.json`. Private Hugging
+  Face files work with `HF_TOKEN` set
+- `/edit` changes a photo from a plain-English instruction (FLUX Kontext)
 
 ---
 
@@ -66,12 +64,11 @@ curl http://localhost:7861/status
 
 ## Configure SillyTavern
 
-1. Open **Extensions → Image Generation**
-2. Set **Source** = `Stable Diffusion`
-3. Set **SD WebUI URL** = `http://localhost:7861`
-4. Enable image generation
+Install Media Studio as described under "MEDIA STUDIO" in README.md, then fill
+in the bridge address and the bridge token (`EDIT_API_TOKEN`) in its settings.
 
-No plugin-specific endpoint is required for baseline compatibility.
+Don't point SillyTavern's own Image Generation at the bridge: it needs the
+retired `/sdapi/v1/txt2img`.
 
 ---
 
@@ -81,7 +78,10 @@ No plugin-specific endpoint is required for baseline compatibility.
 - `GET /sdapi/v1/options`
 - `GET /sdapi/v1/sd-models`
 - `GET /sdapi/v1/samplers`
+
+### Retired (answer 410)
 - `POST /sdapi/v1/txt2img`
+- `POST /v1/images/generations`
 
 ### Operational endpoints
 - `GET /`
@@ -90,7 +90,6 @@ No plugin-specific endpoint is required for baseline compatibility.
 
 ### Stub OpenAI-style endpoints (no backend configured)
 - `POST /v1/chat/completions` (returns 501 — placeholder for future proxy)
-- `GET /v1/models` (returns empty list)
 
 ---
 
@@ -102,22 +101,10 @@ No plugin-specific endpoint is required for baseline compatibility.
 curl http://localhost:7861/status
 ```
 
-### 2) A1111 txt2img smoke test
+### 2) Without spending credits
 
-```bash
-curl -X POST http://localhost:7861/sdapi/v1/txt2img \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "portrait of a woman, cinematic lighting",
-    "negative_prompt": "blurry, low quality",
-    "steps": 20,
-    "cfg_scale": 3.5,
-    "width": 1024,
-    "height": 1024
-  }'
-```
-
-If successful, response includes a base64 image under `images[0]`.
+Run `dev/mock_providers.py` and `dev/run_local.py` (see README.md), then make
+an image from Media Studio.
 
 ---
 
@@ -146,7 +133,7 @@ If successful, response includes a base64 image under `images[0]`.
 - Ensure host can reach provider APIs.
 
 ### SillyTavern can’t connect
-- Confirm ST uses `http://localhost:7861`
+- Confirm Media Studio has the bridge address and the bridge token
 - Ensure bridge is running and port is open
 
 Example:

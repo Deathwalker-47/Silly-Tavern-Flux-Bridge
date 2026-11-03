@@ -25,9 +25,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 os.chdir(ROOT)
 
 from fastapi.testclient import TestClient  # noqa: E402
+import httpx  # noqa: E402
 
 import flux_lora_bridge as bridge  # noqa: E402
-from media import director  # noqa: E402
+from media import director, lora_files  # noqa: E402
+from media.config import MediaConfig  # noqa: E402
 from media.providers import PROVIDERS  # noqa: E402
 from media.routes import public_generation  # noqa: E402
 from media_support import noisy_jpeg, small_jpeg  # noqa: E402
@@ -47,6 +49,59 @@ async def fake_chat(messages, **kw):
 
 
 director.helper.chat = fake_chat
+
+
+HF_TOKEN = "hf_test_token"
+LORA = bytes(range(256)) * 64
+
+
+def fake_hugging_face(request):
+    """Hugging Face wants the token and redirects to its CDN, which must never see it."""
+    if request.url.host == "huggingface.co":
+        allowed = request.headers.get("authorization") == f"Bearer {HF_TOKEN}"
+        if request.url.path == "/api/whoami-v2":
+            return httpx.Response(200 if allowed else 401, json={"name": "me"})
+        if not allowed:
+            return httpx.Response(401)
+        if "missing" in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"Location": "https://cdn.test/blob?sig=1"})
+    assert "authorization" not in request.headers, "the Hugging Face token reached the CDN"
+    byte_range = request.headers.get("range")
+    if byte_range:
+        start, end = (int(n) for n in byte_range.removeprefix("bytes=").split("-"))
+        return httpx.Response(206, content=LORA[start:end + 1],
+                              headers={"Content-Range": f"bytes {start}-{end}/{len(LORA)}", "Accept-Ranges": "bytes"})
+    return httpx.Response(200, content=LORA, headers={"Accept-Ranges": "bytes"})
+
+
+def check_lora_links(client):
+    """Private LoRAs: a random link streams the file from Hugging Face, ranges included, no bridge token."""
+    lora_files._transport = httpx.MockTransport(fake_hugging_face)
+    MediaConfig.PUBLIC_BASE_URL = "https://bridge.test"
+    saved = client.put("/media/keys/huggingface", json={"key": HF_TOKEN}, headers=AUTH).json()
+    assert saved["saved"] and not saved["error"], saved
+    row = next(k for k in client.get("/media/keys", headers=AUTH).json()["keys"] if k["id"] == "huggingface")
+    assert (row["label"], row["source"]) == ("Hugging Face (private LoRAs)", "settings"), row
+
+    path = lora_files.provider_url("https://huggingface.co/u/r/resolve/main/Maya%20(v2).safetensors").removeprefix("https://bridge.test")
+    assert path.startswith("/lora-files/") and path.endswith("/Maya_v2_.safetensors"), path
+    whole = client.get(path)
+    assert whole.status_code == 200 and whole.content == LORA, whole.status_code
+    part = client.get(path, headers={"Range": "bytes=10-19"})
+    assert part.status_code == 206 and part.content == LORA[10:20], part.status_code
+    assert part.headers["content-range"] == f"bytes 10-19/{len(LORA)}", part.headers
+    head = client.head(path)
+    assert head.status_code == 200 and head.headers["content-length"] == str(len(LORA)), head.headers
+    assert client.get("/lora-files/made-up/x.safetensors").status_code == 404
+    missing = lora_files.provider_url("https://huggingface.co/u/r/resolve/main/missing.safetensors")
+    assert client.get(missing.removeprefix("https://bridge.test")).status_code == 404
+
+    refused = client.put("/media/keys/huggingface", json={"key": "hf_wrong_token"}, headers=AUTH).json()
+    assert refused["error"] == "Hugging Face refused the token (HTTP 401)", refused
+    assert client.get(path).status_code == 502, "a refused token is the bridge's problem, not a missing file"
+    assert client.delete("/media/keys/huggingface", headers=AUTH).status_code == 200
+    assert lora_files.provider_url("https://huggingface.co/u/r/resolve/main/a.safetensors").startswith("https://huggingface.co/")
 
 
 def wait(client, job_id):
@@ -186,6 +241,19 @@ def main():
         bridge.Config.EDIT_API_TOKEN = "test-token"
         assert client.delete("/media/keys/nanogpt", headers=AUTH).status_code == 200
         assert next(k for k in client.get("/media/keys", headers=AUTH).json()["keys"] if k["id"] == "nanogpt")["source"] == "none"
+
+        # retired: they took no token, so anyone could spend credits and use every LoRA
+        assert client.post("/sdapi/v1/txt2img", json={"prompt": "x"}).status_code == 410
+        assert client.post("/v1/images/generations", json={"prompt": "x"}).status_code == 410
+        assert client.get("/v1/models").status_code == 404
+
+        # Immich is a photo library: token only
+        for path in ("/immich/status", "/immich/albums", "/immich/albums/a1", "/immich/assets",
+                     "/immich/assets/a1/thumbnail", "/immich/assets/a1/original"):
+            assert client.get(path).status_code == 401, path
+        assert client.get("/immich/status", headers=AUTH).json()["configured"] is False
+
+        check_lora_links(client)
 
     print("PASS")
 

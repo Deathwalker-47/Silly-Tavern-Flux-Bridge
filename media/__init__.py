@@ -9,9 +9,10 @@
   pipelines   image, Best Option, video, keyframes
   jobs        runner, restart recovery, retention
   telemetry   a queryable record of every step; insights turns it into reports
+  lora_files  private Hugging Face LoRAs, handed to providers as short-lived links
   routes      the FastAPI router
 
-flux_lora_bridge.py keeps /sdapi/v1/txt2img, /edit and Immich, and includes the router.
+flux_lora_bridge.py keeps /edit and Immich, and includes the router.
 """
 
 from .catalog import PROVIDER_LABELS

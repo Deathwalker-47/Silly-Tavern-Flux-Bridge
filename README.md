@@ -2,15 +2,13 @@
 FLUX LORA BRIDGE - START HERE
 ================================================================================
 
-This repository provides a FastAPI bridge that exposes an AUTOMATIC1111-style
-`/sdapi/v1/txt2img` endpoint for SillyTavern and routes image generation to
-multiple Flux LoRA providers with fallback.
+This repository provides a FastAPI bridge for SillyTavern. Its extension, Media
+Studio, sends chat photos and videos through several providers, with Flux LoRAs
+from `master_lora_dict.json`.
 
-Image provider order (IMAGE_PROVIDER_ORDER in .env):
-1) Runware (primary)
-2) Replicate (Flux multi-LoRA backup)
-Wavespeed, FAL and Together are deprecated: their code is kept but they are not
-in the default order.
+The AUTOMATIC1111 `/sdapi/v1/txt2img` and OpenAI `/v1/images/generations`
+endpoints are retired and answer 410. They took no token, so anyone who found a
+public bridge could spend provider credits and use every LoRA.
 
 It also includes:
 - Media Studio: a SillyTavern extension (in `silly-tavern-pluggin/`) where
@@ -21,7 +19,7 @@ It also includes:
   summarization and TavernVoice's voice tags
 - Keyword-based LoRA matching from `master_lora_dict.json`
 - FLUX.1 Kontext instruction-based image editing (`POST /edit`, browser UI at `/edit-ui`)
-- Stub OpenAI-compatible endpoints (`/v1/chat/completions`, `/v1/models`) for future proxy use
+- A stub OpenAI-compatible endpoint (`/v1/chat/completions`) for future proxy use
 
 --------------------------------------------------------------------------------
 QUICK SETUP
@@ -44,11 +42,9 @@ QUICK SETUP
 SILLYTAVERN SETTINGS
 --------------------------------------------------------------------------------
 
-In SillyTavern:
-- Extensions -> Image Generation
-- Source: Stable Diffusion
-- SD WebUI URL: http://localhost:7861
-- Enable image generation
+Install Media Studio (see MEDIA STUDIO below). SillyTavern's own Image
+Generation extension can't use the bridge any more, because it needed the
+retired `/sdapi/v1/txt2img`.
 
 --------------------------------------------------------------------------------
 IMPORTANT SECURITY NOTE
@@ -65,7 +61,6 @@ API ENDPOINTS
 - GET  /                         health summary
 - GET  /status                   provider + LoRA status
 - POST /reset                    lightweight reset message endpoint
-- POST /sdapi/v1/txt2img         A1111-compatible txt2img
 - POST /edit                     FLUX Kontext instruction image edit
 - POST /edit/immich              edit an Immich photo and save the result back
 - GET  /edit-ui                  browser UI for /edit (works on a phone)
@@ -90,6 +85,7 @@ API ENDPOINTS
 - POST /media/jobs/{id}/cancel   stop a job and its remote task
 - POST /media/jobs/{id}/ack      the extension saved the file
 - GET  /media/files/{id}         serves finished files (streams with Range)
+- GET  /lora-files/{link}/{name} a private LoRA for a provider (random link, 30 min)
 - GET  /media/generations        gallery rows, by person and kind
 - PATCH /media/generations/{id}  rating and comment
 - GET  /media/generations/{id}/trace   every pipeline step of one generation
@@ -100,17 +96,15 @@ API ENDPOINTS
 - POST /director/next-speaker    group chats: who acts next
 - POST /helper/voice-tags        Grok speech tags for TavernVoice
 - GET  /helper/models            helper model list (for the model menus)
-- POST /v1/images/generations    OpenAI-compatible image generation
 - POST /v1/chat/completions      (stub, returns 501 — no proxy configured)
-- GET  /v1/models                (stub, returns empty list)
+- POST /sdapi/v1/txt2img, POST /v1/images/generations   retired, answer 410
 
 --------------------------------------------------------------------------------
 IMAGE EDITING (FLUX KONTEXT)
 --------------------------------------------------------------------------------
 
 `POST /edit` edits an existing image from a plain-English instruction. It runs on
-Runware's FLUX.1 Kontext and is a separate path from txt2img: no LoRA matching, no
-DeepSeek summarization, no mask. The instruction is sent verbatim, because Kontext
+Runware's FLUX.1 Kontext, with no LoRAs, no prompt summarization and no mask. The instruction is sent verbatim, because Kontext
 follows it literally.
 
 Request fields (`image` and `instruction` are required):
@@ -170,6 +164,8 @@ internet, and send it as either header:
 Authorization: Bearer <token>
 X-Edit-Token: <token>
 ```
+
+Every `/immich/*` route needs the token too, because they read your photo library.
 
 With no token configured the endpoints stay open and a warning is logged at startup.
 
@@ -293,6 +289,13 @@ in SillyTavern, because TavernVoice calls those providers from the browser.
   PixelDojo  PIXELDOJO_API_KEY    Seedream 4.5, The Best Option, video (billed in
                                   credits, the most expensive route)
 
+Private LoRAs: when the LoRA files sit in a private Hugging Face repo, add a
+Hugging Face token (HF_TOKEN) the same way. Read access to that repo is enough.
+Runware and Replicate download LoRAs by link and can't send a token, so the
+bridge gives them a random link of its own (/lora-files/...) that streams the
+file for 30 minutes. They have to reach that link, so it needs PUBLIC_BASE_URL
+set to the bridge's public HTTPS address, and it doesn't work on localhost.
+
 Safety checkers are switched off wherever a provider has a switch. The bridge
 blocks one thing itself: sexual content involving minors. Everyone in a shot
 needs an age of 18 or over.
@@ -328,7 +331,8 @@ Then:
 - Set EDIT_API_TOKEN. Endpoints that spend credits (images, video, helper,
   edits) require it, and anyone can reach a public bridge. Paste the same
   token into Media Studio and TavernVoice.
-- Set PUBLIC_BASE_URL to that HTTPS address, so image URLs resolve.
+- Set PUBLIC_BASE_URL to that HTTPS address, so image URLs and private LoRA
+  links resolve.
 - Media Studio saves each finished file in SillyTavern's own files, so chat
   playback on a phone or PC is served by SillyTavern. The bridge deletes its
   copy MEDIA_FILE_TTL_DAYS after that, or MEDIA_UNSAVED_TTL_DAYS if it was

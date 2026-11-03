@@ -8,7 +8,7 @@ import unittest
 import unittest.mock
 
 from media_support import FakeHTTP, FakeResponse, MediaCase, httpx, noisy_jpeg, run, small_jpeg
-from media import assets, catalog, db, loras
+from media import assets, catalog, db, lora_files, loras
 from media.config import MediaConfig
 from media.providers import base
 from media.providers.base import RenderRequest
@@ -294,6 +294,23 @@ class ReplicateTests(ProviderCase):
         self.assertEqual(inp["hf_loras"], ["https://hf/a.safetensors"])
         self.assertEqual(inp["lora_scales"], [0.9])
         self.assertIs(inp["disable_safety_checker"], True)
+
+    def test_private_loras_go_as_bridge_links_and_the_history_keeps_the_hugging_face_url(self):
+        url = "https://huggingface.co/u/r/resolve/main/Realism%20(v2).safetensors"
+        req = req_for("image", "replicate", "flux-lora", loras=[{"url": url, "weight": 0.9}])
+        sent = {}
+
+        async def create(_model, inp, _token):
+            sent.update(inp)
+            return {"id": "p1"}
+        with unittest.mock.patch.multiple(MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test"), \
+             unittest.mock.patch("media.providers.replicate.replicate_create", create):
+            self.assertEqual(run(Replicate().submit(req)), "p1")
+        self.addCleanup(lora_files._links.clear)
+        link = sent["hf_loras"][0]
+        self.assertRegex(link, r"^https://bridge\.test/lora-files/[\w-]{32}/Realism_v2_\.safetensors$")
+        self.assertEqual(lora_files.source(link.split("/")[-2]), url)
+        self.assertEqual(req.params["hf_loras"], [url])
 
     def test_prediction_states(self):
         self.assertIsNone(prediction_output({"status": "processing"}))
