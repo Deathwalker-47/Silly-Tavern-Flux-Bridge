@@ -79,6 +79,7 @@ export async function openMediaPanel(card) {
     let page = 0;
     let filter = '';
     let uploadSlot = '';
+    let castPeople = [];
     const $root = $(`
         <div class="fm-popup">
             <div class="fm-popup-head">
@@ -92,6 +93,7 @@ export async function openMediaPanel(card) {
             <div class="fm-people fm-hidden">
                 <select class="text_pole fm-person" title="Side characters"></select>
                 <input class="text_pole fm-person-name fm-hidden" type="text" placeholder="Name">
+                <div class="menu_button menu_button_icon fm-find-people" title="Ask the bridge who else is in this card, and add them all"><i class="fa-solid fa-users-viewfinder"></i><span>Find people</span></div>
                 <div class="menu_button fa-solid fa-trash fm-person-remove fm-hidden" title="Remove this side character and their references"></div>
             </div>
             <small class="fm-hint fm-people-hint fm-hidden"></small>
@@ -206,15 +208,30 @@ export async function openMediaPanel(card) {
     const renderPeople = async () => {
         if (!card.side) return;
         const people = await card.side.list();
-        const taken = new Set(people.map(p => p.name.toLowerCase()));
-        const cast = card.side.suggestions().filter(name => !taken.has(name.toLowerCase()));
+        const taken = new Set([...people.map(p => p.name.toLowerCase()), card.name.toLowerCase()]);
+        castPeople = card.side.suggestions().filter(p => !taken.has(p.name.toLowerCase()));
         $root.find('.fm-person').html([
             `<option value="">${esc(card.name)} (the story card, used by default)</option>`,
             ...people.map(p => `<option value="${esc(p.id)}">${esc(p.name || 'Unnamed')}</option>`),
-            ...cast.map(name => `<option value="+cast" data-name="${esc(name)}">+ Add ${esc(name)} from the voice cast</option>`),
+            ...(castPeople.length > 1 ? [`<option value="+cast-all">+ Add all ${castPeople.length} from the voice cast</option>`] : []),
+            ...castPeople.map((p, i) => `<option value="+cast" data-cast="${i}">+ Add ${esc(p.name)} from the voice cast</option>`),
             '<option value="+new">+ Add a side character</option>',
         ].join('')).val(who.id || '');
         $root.find('.fm-people').removeClass('fm-hidden');
+    };
+
+    /** Adds found or cast people, says what happened, and returns the first new id. */
+    const addPeople = async (found) => {
+        const { added, skipped, voice } = await card.side.importAll(found);
+        const parts = [added.length ? `Added ${added.map(p => p.name).join(', ')}.` : 'They are all here already.'];
+        if (skipped && added.length) parts.push(`${skipped} already here.`);
+        if (voice) parts.push(`${voice} also added to the voice cast.`);
+        const described = added.filter(p => p.appearance).length;
+        if (described) parts.push(`${described} got an appearance from the card.`);
+        if (added.length) parts.push("Set each one's age before they can be generated.");
+        toastr[added.length ? 'success' : 'info'](parts.join(' '), 'Media Studio', { timeOut: 12000 });
+        await renderPeople();
+        return added.length ? (await card.side.list()).find(p => p.name === added[0].name)?.id || '' : '';
     };
 
     const fillPerson = () => {
@@ -249,12 +266,31 @@ export async function openMediaPanel(card) {
     $root.on('click', '.fm-tab[data-tab]', function () { showTab(this.dataset.tab); });
     $root.on('change', '.fm-person', async function () {
         let id = this.value;
-        if (id === '+new' || id === '+cast') {
-            const name = id === '+cast' ? $(this).find(':selected').attr('data-name') : window.prompt('Name of the side character', '');
+        if (id === '+cast-all') return showPerson(await addPeople(castPeople));
+        if (id === '+cast') {
+            const person = castPeople[Number($(this).find(':selected').attr('data-cast'))];
+            if (!person) return renderPeople();
+            id = await card.side.add(person.name, person);
+        } else if (id === '+new') {
+            const name = window.prompt('Name of the side character', '');
             if (!name?.trim()) return renderPeople();
             id = await card.side.add(name.trim());
         }
         await showPerson(id);
+    });
+    $root.on('click', '.fm-find-people', async function () {
+        const $btn = $(this).addClass('fm-busy');
+        const $label = $btn.find('span').text('Looking...');
+        try {
+            const found = await card.side.find();
+            if (!found.length) return toastr.info('No other named people on this card.', 'Media Studio');
+            await showPerson(await addPeople(found));
+        } catch (err) {
+            toastr.error(err?.detail || err?.message || String(err), 'Media Studio: could not read the card');
+        } finally {
+            $btn.removeClass('fm-busy');
+            $label.text('Find people');
+        }
     });
     $root.on('change', '.fm-person-name', async function () {
         const target = who;

@@ -585,8 +585,97 @@ function bindSettings() {
 // Panels and buttons
 // ---------------------------------------------------------------------------
 
-/** People TavernVoice found in this card, offered as side characters. */
-const voiceCast = (char) => (char?.data?.extensions?.tavern_voice?.cast || []).map(p => String(p?.name || '').trim()).filter(Boolean);
+const CARD_FIELDS = ['description', 'personality', 'scenario', 'first_mes', 'mes_example'];
+
+/**
+ * The card as POST /helper/cast reads it. data.* wins, because a lazy-loaded card keeps the full
+ * text there, and macros are expanded the way TavernVoice's own findCast does it.
+ */
+function cardPayload(char) {
+    const data = char?.data || {};
+    const sub = (text) => ctx().substituteParams(String(text ?? ''), undefined, char?.name);
+    const card = { name: char?.name || '' };
+    for (const field of CARD_FIELDS) card[field] = sub(data[field] ?? char?.[field] ?? '');
+    const entries = data.character_book?.entries || [];
+    card.lore = sub(entries.map(e => [e.comment, e.content].filter(Boolean).join(': ')).join('\n')).slice(0, 12000);
+    return card;
+}
+
+/** A cast person as the Media panel stores them. An age under 18 is never prefilled: it has to be set by hand. */
+const sideFields = (person) => ({
+    appearance: {
+        age: Number(person?.age) >= 18 ? Number(person.age) : '',
+        text: String(person?.appearance || '').trim(),
+    },
+});
+
+/** People TavernVoice already found in this card, offered as side characters. */
+const voiceCast = (char) => (char?.data?.extensions?.tavern_voice?.cast || [])
+    .map(p => ({ ...p, name: String(p?.name || '').trim() }))
+    .filter(p => p.name);
+
+/** Ask the bridge who is in this card: the same call TavernVoice's Find people makes. */
+async function findCardPeople(chid) {
+    const char = ctx().characters[chid];
+    const { people } = await bridge('/helper/cast', {
+        method: 'POST',
+        body: { card: cardPayload(char), user: ctx().name1 || 'User', voices: [] },
+        timeout: 120000,
+    });
+    const own = String(char?.name || '').toLowerCase();
+    return (people || []).map(p => ({ ...p, name: String(p?.name || '').trim() }))
+        .filter(p => p.name && p.name.toLowerCase() !== own);
+}
+
+/**
+ * Adds people as side characters, skipping names already there, then copies the new ones into
+ * TavernVoice's cast. One at a time, because card writes are queued (profile.js).
+ */
+async function importCardPeople(chid, people) {
+    const taken = new Set([
+        ...sideList(await getCharProfile(chid)).map(p => String(p.name || '').toLowerCase()),
+        String(ctx().characters[chid]?.name || '').toLowerCase(),
+    ]);
+    const added = [];
+    for (const person of people) {
+        if (taken.has(person.name.toLowerCase())) continue;
+        taken.add(person.name.toLowerCase());
+        await addSidePerson(chid, person.name, sideFields(person));
+        added.push(person);
+    }
+    return { added, skipped: people.length - added.length, voice: await syncVoiceCast(chid, added) };
+}
+
+/**
+ * Appends people to TavernVoice's cast so its own picker sees them. Append-only, and only when
+ * TavernVoice is already set up on this card, so nothing it stores is ever overwritten from here.
+ *
+ * The entry is exactly TavernVoice's own shape (its cast.js `clean`): name, voice, about, notes,
+ * with the bridge's "sound" landing in notes, which is what its mergeCast does. Anything else is
+ * dropped the next time it reads the list, so nothing extra is written.
+ */
+async function syncVoiceCast(chid, people) {
+    const c = ctx();
+    const voice = c.characters[chid]?.data?.extensions?.tavern_voice;
+    if (!voice || !people.length) return 0;
+    const cast = Array.isArray(voice.cast) ? voice.cast : [];
+    const taken = new Set(cast.map(p => String(p?.name || '').trim().toLowerCase()));
+    const fresh = people.filter(p => !taken.has(p.name.toLowerCase()));
+    if (!fresh.length) return 0;
+    const entry = (p) => ({
+        name: p.name,
+        voice: String(p.voice || '').trim(),
+        about: String(p.about || '').trim(),
+        notes: String(p.notes ?? p.sound ?? '').trim(),
+    });
+    try {
+        await c.writeExtensionField(chid, 'tavern_voice', { ...voice, cast: [...cast, ...fresh.map(entry)] });
+    } catch (err) {
+        console.warn(TAG, 'could not add to the voice cast', err);
+        return 0;
+    }
+    return fresh.length;
+}
 
 function openCharacterPanel(chid, tab) {
     const char = ctx().characters[chid];
@@ -596,9 +685,11 @@ function openCharacterPanel(chid, tab) {
         load: () => getCharProfile(chid), save: patch => setCharProfile(chid, patch),
         side: {
             list: async () => sideList(await getCharProfile(chid)).map(p => ({ id: p.id, name: p.name || '' })),
-            add: name => addSidePerson(chid, name),
+            add: (name, person) => addSidePerson(chid, name, person ? sideFields(person) : {}),
             remove: id => removeSidePerson(chid, id),
             suggestions: () => voiceCast(ctx().characters[chid]),
+            find: () => findCardPeople(chid),
+            importAll: people => importCardPeople(chid, people),
             who: (id, name) => ({
                 id, name, key: sideKey(char, id), folder: char.name,
                 load: () => getSideProfile(chid, id), save: patch => setSideProfile(chid, id, patch),

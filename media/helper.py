@@ -117,12 +117,14 @@ Rules:
 - If the card is one person, list just that person.
 - "about": 2 to 4 sentences for an actor about to play them on the phone: who they are, how they know {user}, their personality and how they talk. Use only what the card says.
 - "sound": a few words on how their voice sounds (age, tone, pace, accent), or empty.
+- "appearance": what they look like, for an artist drawing them: build, height, hair, eyes, skin, marks and the clothes they usually wear. Use only what the card says, and leave it empty when the card never describes them.
+- "age": their age in years, as a number, when the card gives one or the story states it plainly. Leave it empty otherwise. Never guess an age.
 - "gender": female, male or other.
 - "voice": the id of the voice below that best fits their gender, age and personality. Give each person a different voice when the list allows it.
 - If the card says a person speaks a particular language (Malayalam, Hindi, ...), pick a voice listed for that language. Ids starting with elevenlabs:, heygen: or cartesia: come from those providers; the others are xAI voices. A cartesia: voice speaks every language, so its listed language is only its accent.
 Voices (id: description):
 {voices}
-Reply with one JSON object only: {{"people": [{{"name": "", "gender": "", "about": "", "sound": "", "voice": ""}}]}}"""
+Reply with one JSON object only: {{"people": [{{"name": "", "gender": "", "age": "", "about": "", "sound": "", "appearance": "", "voice": ""}}]}}"""
 
 CAST_FIELDS = ("description", "personality", "scenario", "first_mes", "mes_example", "lore")
 CAST_MAX_PEOPLE = 12
@@ -219,7 +221,7 @@ class HelperLLM:
 
     async def cast(self, card: Dict[str, Any], *, user: str = "", voices: Optional[List[Dict[str, Any]]] = None,
                    model: Optional[str] = None) -> Dict[str, Any]:
-        """The people on a card who can answer a call, each with a short brief and a voice (TavernVoice)."""
+        """The people on a card: a brief and a voice for TavernVoice, a look and an age for Media Studio."""
         user = user or "the user"
         voices = [v for v in voices or [] if v.get("voice_id")]
         listed = "\n".join(f"- {v['voice_id']}: {', '.join(str(v[k]) for k in ('name', 'gender', 'language', 'description') if v.get(k))}"
@@ -229,10 +231,10 @@ class HelperLLM:
         reply = await self.chat(
             [{"role": "system", "content": CAST_SYSTEM.format(user=user, voices=listed)},
              {"role": "user", "content": "\n\n".join(parts)}],
-            model=model, max_tokens=2000, temperature=0.2, timeout=90, purpose="cast",
+            model=model, max_tokens=2800, temperature=0.2, timeout=90, purpose="cast",
         )
         known = {v["voice_id"] for v in voices}
-        people: List[Dict[str, str]] = []
+        people: List[Dict[str, Any]] = []
         seen = {user.lower()}
         for raw in extract_json(reply).get("people") or []:
             if not isinstance(raw, dict):
@@ -248,11 +250,14 @@ class HelperLLM:
                 "gender": gender if gender in ("female", "male") else "other",
                 "about": str(raw.get("about") or "").strip()[:800],
                 "sound": str(raw.get("sound") or "").strip()[:200],
+                "appearance": str(raw.get("appearance") or "").strip()[:800],
+                "age": _card_age(raw.get("age")),
                 "voice": voice if voice in known else "",
             })
             if len(people) == CAST_MAX_PEOPLE:
                 break
-        telemetry.record("voice", "cast", ok=bool(people), people=len(people))
+        telemetry.record("voice", "cast", ok=bool(people), people=len(people),
+                         described=sum(1 for p in people if p["appearance"]), aged=sum(1 for p in people if p["age"]))
         return {"people": people}
 
     async def models(self, force: bool = False) -> List[Dict[str, Any]]:
@@ -290,6 +295,20 @@ class HelperLLM:
         if out:
             self._models_cache = (time.time(), out)
         return out
+
+
+def _card_age(value: Any) -> Optional[int]:
+    """The age the card states, 1 to 120, else None.
+
+    Reported as written: nothing here decides what an under-18 age means. Media Studio
+    refuses to prefill one, and director.minor_block still runs on the saved profile
+    before any render.
+    """
+    try:
+        age = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return age if 1 <= age <= 120 else None
 
 
 def _float(value) -> Optional[float]:

@@ -156,7 +156,8 @@ class HelperTests(unittest.TestCase):
         card = {"name": "Seaside Inn", "description": "An inn run by Nadia. Bram cooks.", "scenario": "", "lore": "Bram is gruff."}
         out = run(helper.cast(card, user="Sam", voices=voices))
         self.assertEqual([p["name"] for p in out["people"]], ["Nadia", "Bram"])
-        self.assertEqual(out["people"][0], {"name": "Nadia", "gender": "female", "about": "The innkeeper.", "sound": "warm, low", "voice": "ara"})
+        self.assertEqual(out["people"][0], {"name": "Nadia", "gender": "female", "about": "The innkeeper.",
+                                            "sound": "warm, low", "appearance": "", "age": None, "voice": "ara"})
         self.assertEqual((out["people"][1]["gender"], out["people"][1]["voice"]), ("other", ""))
         system, user_msg = self.last_messages[0]["content"], self.last_messages[1]["content"]
         self.assertIn("phone call from Sam", system)
@@ -176,6 +177,19 @@ class HelperTests(unittest.TestCase):
         self.assertIn("- heygen:m1: Meera, female, Malayalam, Malayalam", system)
         self.assertIn("- elevenlabs:a: Asha, female, Malayalam, English, warm", system)
         self.assertIn("pick a voice listed for that language", system)
+
+    def test_cast_reports_a_look_and_only_an_age_the_card_states(self):
+        reply = json.dumps({"people": [
+            {"name": "Nadia", "about": "The innkeeper.", "appearance": "Tall, red hair, green apron.", "age": "34"},
+            {"name": "Bram", "about": "The cook.", "appearance": "", "age": "a grown man"},
+            {"name": "Tam", "about": "The stable kid.", "age": "9"},
+        ]})
+        out = run(self.with_reply(reply).cast({"name": "Seaside Inn", "description": "An inn."}, user="Sam"))
+        looks = {p["name"]: (p["appearance"], p["age"]) for p in out["people"]}
+        self.assertEqual(looks["Nadia"], ("Tall, red hair, green apron.", 34))
+        self.assertEqual(looks["Bram"], ("", None), "an age that isn't a number is left unset")
+        self.assertEqual(looks["Tam"][1], 9, "reported as written; the panel and the guard judge it")
+        self.assertIn("Never guess an age", self.last_messages[0]["content"])
 
     def test_voice_tags_level_none_skips_the_llm(self):
         out = run(self.with_reply("SHOULD NOT BE USED").voice_tags("Hi.", tag_level="none"))

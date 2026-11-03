@@ -85,9 +85,9 @@ export async function setSideProfile(chid, id, patch) {
     return sideProfile(sideList(next).find(p => p.id === id) || { ...blank(), id });
 }
 
-export async function addSidePerson(chid, name) {
+export async function addSidePerson(chid, name, fields = {}) {
     const id = Math.random().toString(36).slice(2, 10);
-    await setCharProfile(chid, current => ({ side: [...sideList(current), { ...blank(), id, name }] }));
+    await setCharProfile(chid, current => ({ side: [...sideList(current), { ...blank(), id, name, ...fields }] }));
     return id;
 }
 
