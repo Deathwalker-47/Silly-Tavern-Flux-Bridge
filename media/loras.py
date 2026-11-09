@@ -22,8 +22,11 @@ def use(manager: Any, resolve_runware_loras: Callable[..., List[Dict[str, Any]]]
     _manager, _resolve = manager, resolve_runware_loras
 
 
-def resolve_runware(items: List[Dict[str, Any]], key: str, arch: str) -> List[Dict[str, Any]]:
-    return _resolve(items, key, arch)
+def resolve_runware(items: List[Dict[str, Any]], key: str, arch: str,
+                    failures: Optional[List[tuple]] = None) -> List[Dict[str, Any]]:
+    """Runware ids for these LoRAs, uploading new ones (minutes each). One that can't be used
+    is left out, and (source, reason) goes into `failures`."""
+    return _resolve(items, key, arch, failures=failures)
 
 
 def character_lora(name: str, sd_prompt: str, arch: str = "flux") -> Optional[Dict[str, Any]]:

@@ -84,14 +84,20 @@ class Runware(Provider):
                 waited += LORA_READY_POLL
 
     async def submit(self, req: RenderRequest) -> str:
+        failures: List[Tuple[str, str]] = []
         with telemetry.step("loras", "resolve", provider=self.name, count=len(req.loras)) as facts:
-            # In a thread: uploads and the model check are blocking HTTP calls (up to 60 s).
+            # In a thread: the model check is a blocking HTTP call, and a new LoRA's upload
+            # waits minutes for Runware to finish processing it.
             resolved = await asyncio.to_thread(
                 loras.resolve_runware, [{"lora": l["url"], "weight": l["weight"]} for l in req.loras],
-                MediaConfig.RUNWARE_API_KEY, req.option.lora_arch)
+                MediaConfig.RUNWARE_API_KEY, req.option.lora_arch, failures)
             facts["resolved"] = len(resolved)
+            if failures:
+                facts["failed"] = [reason[:300] for _src, reason in failures]
         if len(resolved) < len(req.loras):
-            raise RuntimeError(f"Only {len(resolved)} of {len(req.loras)} LoRAs could be prepared on Runware")
+            names = {l["url"]: l.get("id") or l["url"].rsplit("/", 1)[-1] for l in req.loras}
+            why = "; ".join(f"{names.get(src, src)}: {reason}" for src, reason in failures)
+            raise RuntimeError(f"Runware couldn't use {len(req.loras) - len(resolved)} of {len(req.loras)} LoRAs. {why}".strip())
         task_uuid = str(uuid.uuid4())
         task = self.build_task(req, resolved, task_uuid)
         req.params = {k: v for k, v in task.items() if k not in ("taskUUID", "taskType")}
