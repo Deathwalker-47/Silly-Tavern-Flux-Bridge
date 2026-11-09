@@ -2,18 +2,28 @@
 
 Replicate and Runware fetch a LoRA by its URL, and a private Hugging Face file answers
 them with 401. Giving them HF_TOKEN would let them read every private repo on the
-account, so with HF_TOKEN set each Hugging Face URL becomes a random link on this bridge
-that streams the file for LINK_TTL seconds. The random part is the only key. Providers
-have to reach the link, so this works on the public bridge, not on localhost.
+account, so with HF_TOKEN set each Hugging Face URL becomes a link on this bridge that
+streams the file. Providers have to reach the link, so this works on the public bridge,
+not on localhost.
+
+A link is the Hugging Face URL plus a signature made with a secret only the bridge knows,
+so it can't be forged or pointed at another file, and it needs no memory: it works after
+a restart, and from any process that has the secret. It doesn't expire, because Runware
+keeps the URL it was given and downloads the file again later (seen 7 hours after an
+upload). Changing the secret retires every link at once.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
+import os
 import re
 import secrets
-import time
-from typing import Any, Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -23,10 +33,10 @@ from .config import MediaConfig
 logger = logging.getLogger(__name__)
 
 HF_HOSTS = {"huggingface.co", "www.huggingface.co", "hf.co"}
-LINK_TTL = 30 * 60      # seconds: a provider may sit in its queue a while before downloading
+SECRET_FILE = "lora_link_secret"    # in DATA_DIR, made on first use when LORA_LINK_SECRET is unset
 PASSED_HEADERS = ("content-length", "content-range", "accept-ranges", "etag", "last-modified")
 
-_links: Dict[str, Tuple[str, float]] = {}
+_secrets: Dict[str, bytes] = {}     # secret file path -> its contents, read once
 _transport: Optional[httpx.AsyncBaseTransport] = None   # tests put a mock Hugging Face here
 
 
@@ -46,26 +56,62 @@ def file_name(url: str) -> str:
 
 
 def provider_url(url: str) -> str:
-    """Where a provider should download this LoRA: a link on this bridge for a Hugging Face file."""
+    """Where a provider should download this LoRA: a link on this bridge for a Hugging Face file.
+    The same file always gets the same link."""
     if not (MediaConfig.HF_TOKEN and MediaConfig.PUBLIC_BASE_URL and is_hf(url)):
         return url
-    _forget_expired()
-    link = secrets.token_urlsafe(24)
-    _links[link] = (url, time.time() + LINK_TTL)
-    return f"{MediaConfig.PUBLIC_BASE_URL}/lora-files/{link}/{file_name(url)}"
+    return f"{MediaConfig.PUBLIC_BASE_URL}/lora-files/{_b64(url.encode())}.{_sign(url)}/{file_name(url)}"
 
 
 def source(link: str) -> Optional[str]:
-    """The Hugging Face URL behind a link, or None once it has expired."""
-    _forget_expired()
-    entry = _links.get(link)
-    return entry[0] if entry else None
+    """The Hugging Face URL behind a link, or None if the bridge didn't make it."""
+    encoded, _, signature = link.rpartition(".")
+    if not encoded or not signature:
+        return None
+    try:
+        url = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode()
+    except ValueError:      # bad base64 (binascii.Error) or bad UTF-8 (UnicodeDecodeError) are both ValueErrors
+        return None
+    if not is_hf(url) or not hmac.compare_digest(signature, _sign(url)):
+        return None
+    return url
 
 
-def _forget_expired() -> None:
-    now = time.time()
-    for link in [k for k, (_url, until) in _links.items() if until < now]:
-        del _links[link]
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _sign(url: str) -> str:
+    return _b64(hmac.new(_secret(), url.encode(), hashlib.sha256).digest())[:32]
+
+
+def _secret() -> bytes:
+    """LORA_LINK_SECRET, or a random one made once and kept in DATA_DIR, so links outlive restarts."""
+    if MediaConfig.LORA_LINK_SECRET:
+        return MediaConfig.LORA_LINK_SECRET.encode()
+    path = Path(MediaConfig.DATA_DIR) / SECRET_FILE
+    if str(path) not in _secrets:
+        _secrets[str(path)] = _read_or_make(path)
+    return _secrets[str(path)]
+
+
+def _read_or_make(path: Path) -> bytes:
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:    # O_EXCL: if another process makes it first, use theirs
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            made = secrets.token_urlsafe(32).encode()
+            with os.fdopen(fd, "wb") as f:
+                f.write(made)
+            logger.info(f"📦 [LoRA link] Made a new link secret in {path}")
+            return made
+    value = path.read_bytes().strip()
+    if not value:
+        raise RuntimeError(f"{path} is empty. Delete it and the bridge makes a new one.")
+    return value
 
 
 async def stream(url: str, method: str = "GET", byte_range: Optional[str] = None) -> Any:

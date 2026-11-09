@@ -260,10 +260,10 @@ async def media_file(file_id: str):
 
 @router.api_route("/lora-files/{link}/{name}", methods=["GET", "HEAD"])
 async def lora_file(link: str, name: str, request: Request):
-    """A private LoRA for a provider. No token: the random link is the key, and it expires."""
+    """A private LoRA for a provider. No token: the signed link is the key."""
     url = lora_files.source(link)
     if not url:
-        raise HTTPException(status_code=404, detail="Link expired")
+        raise HTTPException(status_code=404, detail="Unknown link")
     return await lora_files.stream(url, request.method, request.headers.get("range"))
 
 

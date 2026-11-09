@@ -1,6 +1,6 @@
 """Replicate: Flux Dev with LoRAs by link, filter off. No balance API.
 
-A private Hugging Face file goes in as a short-lived link on the bridge (see lora_files)."""
+A private Hugging Face file goes in as a signed link on the bridge (see lora_files)."""
 
 from __future__ import annotations
 

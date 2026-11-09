@@ -303,13 +303,13 @@ class ReplicateTests(ProviderCase):
         async def create(_model, inp, _token):
             sent.update(inp)
             return {"id": "p1"}
-        with unittest.mock.patch.multiple(MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test"), \
+        with unittest.mock.patch.multiple(MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test",
+                                          LORA_LINK_SECRET="test-secret"), \
              unittest.mock.patch("media.providers.replicate.replicate_create", create):
             self.assertEqual(run(Replicate().submit(req)), "p1")
-        self.addCleanup(lora_files._links.clear)
-        link = sent["hf_loras"][0]
-        self.assertRegex(link, r"^https://bridge\.test/lora-files/[\w-]{32}/Realism_v2_\.safetensors$")
-        self.assertEqual(lora_files.source(link.split("/")[-2]), url)
+            link = sent["hf_loras"][0]
+            self.assertRegex(link, r"^https://bridge\.test/lora-files/[\w-]+\.[\w-]{32}/Realism_v2_\.safetensors$")
+            self.assertEqual(lora_files.source(link.split("/")[-2]), url)
         self.assertEqual(req.params["hf_loras"], [url])
 
     def test_prediction_states(self):
