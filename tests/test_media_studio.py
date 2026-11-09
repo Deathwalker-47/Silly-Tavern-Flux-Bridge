@@ -374,11 +374,11 @@ class RunwareLoraMappingTests(unittest.TestCase):
         fake = types.SimpleNamespace(head=lambda _url, **kw: heads.append(kw["headers"]) or types.SimpleNamespace(status_code=200),
                                      post=lambda *_a, **kw: posts.append(kw["json"][0]) or reply, TimeoutException=TimeoutError)
         with unittest.mock.patch.object(bridge, "httpx", fake), \
-             unittest.mock.patch.multiple(bridge.ms.MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test"):
+             unittest.mock.patch.multiple(bridge.ms.MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test",
+                                          LORA_LINK_SECRET="test-secret"):
             bridge.upload_lora_to_runware(self.URL, "key", "flux")
-        self.addCleanup(bridge.lora_files._links.clear)
         self.assertEqual(heads, [{"Authorization": "Bearer hf_test"}])
-        self.assertRegex(posts[0]["downloadURL"], r"^https://bridge\.test/lora-files/[\w-]{32}/a\.safetensors$")
+        self.assertRegex(posts[0]["downloadURL"], r"^https://bridge\.test/lora-files/[\w-]+\.[\w-]{32}/a\.safetensors$")
 
     def test_flux_air_is_the_plain_url_hash_so_uploads_keep_their_id(self):
         expected = hashlib.sha256(self.URL.lower().encode()).hexdigest()[:12]

@@ -85,7 +85,7 @@ API ENDPOINTS
 - POST /media/jobs/{id}/cancel   stop a job and its remote task
 - POST /media/jobs/{id}/ack      the extension saved the file
 - GET  /media/files/{id}         serves finished files (streams with Range)
-- GET  /lora-files/{link}/{name} a private LoRA for a provider (random link, 30 min)
+- GET  /lora-files/{link}/{name} a private LoRA for a provider (signed link)
 - GET  /media/generations        gallery rows, by person and kind
 - PATCH /media/generations/{id}  rating and comment
 - GET  /media/generations/{id}/trace   every pipeline step of one generation
@@ -292,9 +292,11 @@ in SillyTavern, because TavernVoice calls those providers from the browser.
 Private LoRAs: when the LoRA files sit in a private Hugging Face repo, add a
 Hugging Face token (HF_TOKEN) the same way. Read access to that repo is enough.
 Runware and Replicate download LoRAs by link and can't send a token, so the
-bridge gives them a random link of its own (/lora-files/...) that streams the
-file for 30 minutes. They have to reach that link, so it needs PUBLIC_BASE_URL
-set to the bridge's public HTTPS address, and it doesn't work on localhost.
+bridge gives them a signed link of its own (/lora-files/...) that streams the
+file. The link doesn't expire, because Runware keeps it and downloads the file
+again later; only the bridge can make one, and changing LORA_LINK_SECRET retires
+them all. Providers have to reach that link, so it needs PUBLIC_BASE_URL set to
+the bridge's public HTTPS address, and it doesn't work on localhost.
 
 Safety checkers are switched off wherever a provider has a switch. The bridge
 blocks one thing itself: sexual content involving minors. Everyone in a shot

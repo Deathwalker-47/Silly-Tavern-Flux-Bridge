@@ -9,7 +9,7 @@
   pipelines   image, Best Option, video, keyframes
   jobs        runner, restart recovery, retention
   telemetry   a queryable record of every step; insights turns it into reports
-  lora_files  private Hugging Face LoRAs, handed to providers as short-lived links
+  lora_files  private Hugging Face LoRAs, handed to providers as signed links
   routes      the FastAPI router
 
 flux_lora_bridge.py keeps /edit and Immich, and includes the router.

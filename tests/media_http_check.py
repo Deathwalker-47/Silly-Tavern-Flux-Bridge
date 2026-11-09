@@ -76,7 +76,8 @@ def fake_hugging_face(request):
 
 
 def check_lora_links(client):
-    """Private LoRAs: a random link streams the file from Hugging Face, ranges included, no bridge token."""
+    """Private LoRAs: a signed link streams the file from Hugging Face, ranges included, no bridge token.
+    No LORA_LINK_SECRET is set here, so this also covers the secret the bridge makes in DATA_DIR."""
     lora_files._transport = httpx.MockTransport(fake_hugging_face)
     MediaConfig.PUBLIC_BASE_URL = "https://bridge.test"
     saved = client.put("/media/keys/huggingface", json={"key": HF_TOKEN}, headers=AUTH).json()
@@ -94,6 +95,10 @@ def check_lora_links(client):
     head = client.head(path)
     assert head.status_code == 200 and head.headers["content-length"] == str(len(LORA)), head.headers
     assert client.get("/lora-files/made-up/x.safetensors").status_code == 404
+    link = path.split("/")[2]
+    changed = link[:-1] + ("A" if link[-1] != "A" else "B")
+    assert client.get(f"/lora-files/{changed}/Maya_v2_.safetensors").status_code == 404, "a changed signature leads nowhere"
+    assert Path(folder, "lora_link_secret").exists()
     missing = lora_files.provider_url("https://huggingface.co/u/r/resolve/main/missing.safetensors")
     assert client.get(missing.removeprefix("https://bridge.test")).status_code == 404
 

@@ -36,10 +36,12 @@ class MediaConfig:
     REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", "")
     REPLICATE_FLUX_MODEL = os.getenv("REPLICATE_FLUX_MODEL", "lucataco/flux-dev-multi-lora")
 
-    # Private LoRA files: the bridge reads them with this token and gives providers a
-    # short-lived link of its own, so PUBLIC_BASE_URL must be this bridge's public address.
+    # Private LoRA files: the bridge reads them with this token and gives providers a signed
+    # link of its own, so PUBLIC_BASE_URL must be this bridge's public address. The links are
+    # signed with LORA_LINK_SECRET, or with a secret the bridge makes and keeps in DATA_DIR.
     HF_TOKEN = os.getenv("HF_TOKEN", "")
     PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://bridge.midnighttavern.online").rstrip("/")
+    LORA_LINK_SECRET = os.getenv("LORA_LINK_SECRET", "")
 
     PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "")
     PIXELDOJO_BASE = os.getenv("PIXELDOJO_BASE", "https://pixeldojo.ai/api/v1").rstrip("/")

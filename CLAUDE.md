@@ -82,8 +82,8 @@ Return base64 image
 ## Important Notes
 
 - `flux_lora_bridge.py` holds `/edit`, Immich and the core routes; Media Studio lives in `media/`.
-- Every route that spends credits or reads private data checks `EDIT_API_TOKEN`. The bridge is public, so a new route needs that check unless it serves files by a random id (`/images/{id}`, `/media/files/{id}`, `/lora-files/{link}/{name}`).
-- LoRA files can be in a private Hugging Face repo: providers get them through `media/lora_files.py` (short-lived bridge links), never with `HF_TOKEN`.
+- Every route that spends credits or reads private data checks `EDIT_API_TOKEN`. The bridge is public, so a new route needs that check unless it serves files by a random id or a signed link (`/images/{id}`, `/media/files/{id}`, `/lora-files/{link}/{name}`).
+- LoRA files can be in a private Hugging Face repo: providers get them through `media/lora_files.py` (signed bridge links that don't expire, since Runware downloads again later), never with `HF_TOKEN`.
 - LoRA matching is case-insensitive keyword matching against `master_lora_dict.json`.
 - Role-based LoRA caps: character=6, nsfw=4, expression=2, general=2, misc=1.
 - Image generation timeout: 120s (provider calls: 90s).
