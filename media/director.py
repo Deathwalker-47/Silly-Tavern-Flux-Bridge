@@ -180,14 +180,16 @@ def director_messages(ctx: DirectorInput, option: Any, mode: str) -> List[Dict[s
 
 async def make_plan(ctx: DirectorInput, option: Any, mode: str) -> Plan:
     """One retry on a failed or malformed reply, then the job fails. There's no fallback to a raw
-    prompt, so a bad director result can't get past the minor guard."""
+    prompt, so a bad director result can't get past the minor guard.
+
+    The timeout covers the reasoning room as well as the plan: GLM writes about 55 tokens a second."""
     messages = director_messages(ctx, option, mode)
     last_error: Optional[Exception] = None
     for attempt in (1, 2):
         try:
             with telemetry.step("director", "plan", attempt=attempt, family=option.family, mode=mode, provider=option.provider) as facts:
                 raw = await helper.chat(messages, model=MediaConfig.DIRECTOR_MODEL, response_format=PLAN_SCHEMA,
-                                        max_tokens=3000, temperature=0.5, timeout=90, purpose="plan")
+                                        max_tokens=3000, temperature=0.5, timeout=240, purpose="plan")
                 facts["raw"] = {"reply": raw}
                 plan = Plan.parse(raw)
                 facts.update(blocked=plan.blocked, adult=plan.adult, pov=plan.pov, people=len(plan.people),
@@ -273,7 +275,8 @@ async def decide(body: Dict[str, Any]) -> Dict[str, Any]:
     if body.get("summary"):
         prompt = f"Summary so far: {body['summary']}\n\n{prompt}"
     reply = await helper.chat([{"role": "system", "content": system}, {"role": "user", "content": f"{prompt}\n\nDecide now."}],
-                              model=body.get("model") or MediaConfig.DIRECTOR_MODEL, max_tokens=450, temperature=0.3, purpose="decide")
+                              model=body.get("model") or MediaConfig.DIRECTOR_MODEL, max_tokens=450, temperature=0.3, timeout=120,
+                              purpose="decide")
     decision = extract_json(reply)
     action = str(decision.get("action") or "none").lower()
     if action not in ("none", "image", "video") or (action == "image" and not allow_image) or (action == "video" and not allow_video):

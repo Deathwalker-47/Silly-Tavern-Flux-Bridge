@@ -225,7 +225,8 @@ class ReplicateFluxTests(unittest.TestCase):
 
 
 class HelperModelTests(unittest.TestCase):
-    """GLM reasons before answering, so a small max_tokens would come back empty."""
+    """GLM reasons before answering, and the reasoning spends max_tokens first, so the answer
+    needs its budget on top of the reasoning. Without that, long chats came back empty or cut off."""
 
     def send(self, model, max_tokens=100):
         sent = []
@@ -251,10 +252,13 @@ class HelperModelTests(unittest.TestCase):
     def test_glm_gets_low_reasoning_and_room_to_answer(self):
         payload = self.send("z-ai/glm-5.3-flash-uncensored")
         self.assertEqual(payload["reasoning_effort"], "low")
-        self.assertEqual(payload["max_tokens"], helper_module.REASONING_MIN_TOKENS)
+        self.assertEqual(payload["max_tokens"], 100 + helper_module.REASONING_ROOM)
 
-    def test_a_larger_budget_is_kept(self):
-        self.assertEqual(self.send("z-ai/glm-5.3-flash-uncensored", max_tokens=3000)["max_tokens"], 3000)
+    def test_the_director_keeps_its_whole_answer_budget_after_reasoning(self):
+        # On 2026-11-08 the plan's reasoning used 2,560 to 3,000 of a 3,000 budget, leaving no answer.
+        self.assertGreaterEqual(helper_module.REASONING_ROOM, 3000)
+        self.assertEqual(self.send("z-ai/glm-5.3-flash-uncensored", max_tokens=3000)["max_tokens"],
+                         3000 + helper_module.REASONING_ROOM)
 
     def test_other_uncensored_models_are_left_alone(self):
         payload = self.send("some/other-uncensored")

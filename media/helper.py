@@ -136,9 +136,12 @@ def text_model_allowed(model: str) -> bool:
     return model in named or "uncensored" in model.lower() or model.startswith("mock/")
 
 
-# GLM always reasons before it answers, and that reasoning spends max_tokens first.
+# GLM always reasons before it answers (NanoGPT refuses requests to turn it off), and that
+# reasoning spends max_tokens first. On a long chat it can pass 3,000 tokens, which left the
+# director with an empty or cut-off reply. So max_tokens is the answer's budget, and reasoning
+# models get REASONING_ROOM on top. It's a ceiling, not a target: short thinking costs nothing.
 REASONING_MODELS = ("z-ai/glm",)
-REASONING_MIN_TOKENS = 800
+REASONING_ROOM = 8000
 
 
 class HelperLLM:
@@ -167,7 +170,7 @@ class HelperLLM:
             raise RuntimeError(f"{model_id} isn't an uncensored model, so it can't run in the chat pipeline")
         payload: Dict[str, Any] = {"model": model_id, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
         if model_id.startswith(REASONING_MODELS):
-            payload.update(reasoning_effort="low", max_tokens=max(max_tokens, REASONING_MIN_TOKENS))
+            payload.update(reasoning_effort="low", max_tokens=max_tokens + REASONING_ROOM)
         if response_format:
             payload["response_format"] = response_format
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
