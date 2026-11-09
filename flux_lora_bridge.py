@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -44,20 +45,58 @@ def generate_air_id_from_url(hf_url, arch="flux"):
     return air_id, url_hash
 
 
+RUNWARE_WS_URL = "wss://ws-api.runware.ai/v1"
+RUNWARE_UPLOAD_WAIT = 15 * 60   # seconds to follow an upload; a 700 MB LoRA takes minutes to process
+
+
+def follow_runware_upload(task, runware_api_key, wait=None):
+    """Send a modelUpload over Runware's WebSocket API and read its statuses to the end.
+
+    Over HTTP Runware answers with the first status only ("validated"), so an upload it
+    later failed to process looked like a success, and the LoRA's first job died with
+    "Invalid value for 'lora.model'". Returns "ready", or the last status seen if the wait
+    runs out first; raises with Runware's reason if it fails.
+    """
+    from websockets.sync.client import connect   # websockets comes with uvicorn[standard]
+
+    deadline = time.time() + (RUNWARE_UPLOAD_WAIT if wait is None else wait)
+    status = "sent"
+    with connect(RUNWARE_WS_URL, max_size=None, open_timeout=30) as ws:
+        ws.send(json.dumps([{"taskType": "authentication", "apiKey": runware_api_key}]))
+        auth = json.loads(ws.recv(timeout=30))
+        if auth.get("errors"):
+            raise Exception(f"Runware refused the key: {auth['errors'][0].get('message')}")
+        ws.send(json.dumps([task]))
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                return status
+            try:
+                message = json.loads(ws.recv(timeout=left))
+            except TimeoutError:
+                return status
+            errors = [e for e in message.get("errors") or [] if e.get("taskUUID") in (None, task["taskUUID"])]
+            if errors:
+                raise Exception(f"Runware error: {errors[0].get('message') or errors[0]}")
+            for item in message.get("data") or []:
+                if item.get("taskUUID") != task["taskUUID"]:
+                    continue
+                status = item.get("status") or status
+                logger.info(f"🌐 [Runware] {task['name']}: {status}")
+                if status == "failed":
+                    raise RunwareProcessingFailed(f"Runware couldn't process this LoRA: {item.get('message') or 'it gave no reason'}")
+                if status == "ready":
+                    return status
+
+
 def upload_lora_to_runware(hf_url, runware_api_key, arch):
-    """Upload LoRA to Runware by providing download URL - SYNC VERSION."""
-    # Generate proper AIR identifier
+    """Upload a LoRA to Runware by its download URL and wait until Runware can use it.
+    Blocking (called in a thread). Returns the AIR; raises with Runware's reason on failure."""
     air_id, url_hash = generate_air_id_from_url(hf_url, arch)
-    
-    # Extract clean name from URL
     model_name = hf_url.split('/')[-1].replace('.safetensors', '').replace('%20', '_').replace(' ', '_')
-    
-    # Build model upload task
-    task_uuid = str(uuid.uuid4())
-    payload = [{
+    task = {
         "taskType": "modelUpload",
-        "taskUUID": task_uuid,
-        "deliveryMethod": "sync",
+        "taskUUID": str(uuid.uuid4()),
         "category": "lora",
         "architecture": ARCH_RUNWARE[arch],
         "format": "safetensors",
@@ -68,13 +107,8 @@ def upload_lora_to_runware(hf_url, runware_api_key, arch):
         "downloadURL": lora_files.provider_url(hf_url),   # a private file goes as a link on this bridge
         "defaultWeight": 1.0,
         "private": True
-    }]
-    
-    headers = {
-        "Authorization": f"Bearer {runware_api_key}",
-        "Content-Type": "application/json"
     }
-    
+
     try:
         # Runware accepts a dead link ("model re-processing") and the LoRA just never
         # becomes usable, so catch renamed/deleted files here with a clear message.
@@ -87,43 +121,15 @@ def upload_lora_to_runware(hf_url, runware_api_key, arch):
                                 else f"LoRA file isn't public (HTTP {probe}). Set HF_TOKEN so the bridge can hand it to Runware")
 
         logger.info(f"🌐 [Runware] Uploading {model_name} with AIR: {air_id}")
-
-        # httpx, not requests: requests isn't a dependency, and the ImportError used to
-        # be swallowed by the caller, so no new LoRA ever reached Runware.
-        resp = httpx.post(
-            "https://api.runware.ai/v1",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-
-        logger.info(f"🌐 [Runware] Response status: {resp.status_code}")
-
-        if resp.status_code != 200:
-            logger.error(f"🌐 [Runware] Upload error: {resp.text}")
-            raise Exception(f"Upload failed with status {resp.status_code}")
-
-        data = resp.json()
-        if data.get("errors"):
-            raise Exception(f"Runware error: {data['errors'][0].get('message')}")
-
-        if data.get('data'):
-            if "error" in data['data'][0]:
-                raise Exception(f"Runware error: {data['data'][0]['error']}")
-
-            status = data['data'][0].get('status', 'unknown')
-            logger.info(f"🌐 [Runware] Upload success - AIR: {air_id}, Status: {status}")
-
+        status = follow_runware_upload(task, runware_api_key)
+        if status != "ready":
+            # Still processing when the wait ran out: the render waits for it too, and
+            # resolve_runware_loras re-checks the listing before trusting this mapping.
+            logger.warning(f"🌐 [Runware] {model_name} still '{status}' after {RUNWARE_UPLOAD_WAIT}s - keeping AIR: {air_id}")
         return air_id
 
-    except httpx.TimeoutException:
-        # The upload keeps going on Runware's side; resolve_runware_loras re-checks
-        # that the model really exists before trusting this mapping.
-        logger.warning(f"🌐 [Runware] Upload timeout - returning AIR: {air_id}")
-        return air_id
-        
     except Exception as e:
-        logger.error(f"🌐 [Runware] Upload failed: {e}")
+        logger.error(f"🌐 [Runware] Upload of {model_name} failed: {e}")
         raise
 
 
@@ -180,10 +186,10 @@ def mapped_lora(mapping, url, arch, visible):
     return None if _mapping_is_stale(entry, visible) else entry["runware_id"]
 
 
-def resolve_runware_loras(loras, runware_api_key, arch="flux"):
-    """Resolve a list of LoRA descriptors into Runware-usable IDs."""
+def resolve_runware_loras(loras, runware_api_key, arch="flux", failures=None):
+    """Resolve a list of LoRA descriptors into Runware-usable IDs, uploading new ones.
+    A LoRA that can't be used is left out, and (source, reason) goes into `failures` if given."""
     mapping = load_runware_lora_mapping()
-    updated = False
     resolved = []
     visible = None  # fetched on first use: only mapped URLs need checking
     
@@ -207,64 +213,68 @@ def resolve_runware_loras(loras, runware_api_key, arch="flux"):
             resolved.append({"lora": src_str, "weight": weight})
             continue
         
-        # 3) HTTP(S) URLs
-        if src_str.startswith("http://") or src_str.startswith("https://"):
-            if src_str in mapping and visible is None:
-                visible = runware_private_loras(runware_api_key)
-            runware_id = mapped_lora(mapping, src_str, arch, visible)
-            if runware_id:
-                logger.info(f"🌐 [Runware] Found mapping for {src_str} -> {runware_id}")
-            else:
-                if src_str in mapping:
-                    # e.g. an upload that timed out and then failed: Runware rejects the id
-                    # ("Invalid value for 'lora.model'"), so upload again. A file moved to
-                    # another architecture lands here too and gets that architecture's AIR.
-                    logger.warning(f"🌐 [Runware] {mapping[src_str]['runware_id']} can't be used for {arch}, re-uploading")
-                    del mapping[src_str]
-                    updated = True
-                try:
-                    logger.info(f"🌐 [Runware] Uploading LoRA from URL to Runware: {src_str}")
-                    # ✅ Call sync function using asyncio.to_thread()
-                    runware_id = upload_lora_to_runware(src_str, runware_api_key, arch)
-                    mapping[src_str] = {
-                        "runware_id": runware_id,
-                        "architecture": ARCH_RUNWARE[arch],
-                        "uploaded_at": datetime.utcnow().isoformat()
-                    }
-                    updated = True
-                    logger.info(f"🌐 [Runware] Uploaded and mapped {src_str} -> {runware_id}")
-                except Exception as e:
-                    logger.warning(f"🌐 [Runware] Failed to upload LoRA URL {src_str}: {e}")
-                    continue
-            
-            resolved.append({"lora": runware_id, "weight": weight})
-            continue
-        
-        # 4) Last ditch attempt
-        try:
-            logger.info(f"🌐 [Runware] Attempting to upload ambiguous LoRA source: {src_str}")
-            # ✅ Call sync function using asyncio.to_thread()
-            runware_id = upload_lora_to_runware(src_str, runware_api_key, arch)
-            mapping[src_str] = {
-                "runware_id": runware_id,
-                "architecture": ARCH_RUNWARE[arch],
-                "uploaded_at": datetime.utcnow().isoformat()
-            }
-            updated = True
-            resolved.append({"lora": runware_id, "weight": weight})
-            logger.info(f"🌐 [Runware] Successfully uploaded ambiguous source -> {runware_id}")
-        except Exception as e:
-            logger.warning(f"🌐 [Runware] Skipping LoRA {src_str}: {e}")
-            continue
-    
-    if updated:
-        try:
-            save_runware_lora_mapping(mapping)
-            logger.info("🌐 [Runware] runware_lora_mapping.json updated")
-        except Exception as e:
-            logger.error(f"🌐 [Runware] Failed saving mapping file: {e}")
-    
+        # 3) HTTP(S) URLs, and 4) anything else, as a last try
+        if src_str in mapping and visible is None:
+            visible = runware_private_loras(runware_api_key)
+        runware_id = mapped_lora(mapping, src_str, arch, visible)
+        if runware_id:
+            logger.info(f"🌐 [Runware] Found mapping for {src_str} -> {runware_id}")
+        else:
+            if src_str in mapping:
+                # e.g. an upload Runware never finished: it rejects the id ("Invalid value for
+                # 'lora.model'"), so upload again. A file moved to another architecture lands
+                # here too and gets that architecture's AIR.
+                logger.warning(f"🌐 [Runware] {mapping[src_str]['runware_id']} can't be used for {arch}, re-uploading")
+            try:
+                runware_id = upload_and_map(src_str, runware_api_key, arch, visible)
+            except Exception as e:
+                logger.warning(f"🌐 [Runware] Failed to upload LoRA {src_str}: {e}")
+                if failures is not None:
+                    failures.append((src, str(e)))
+                continue
+        resolved.append({"lora": runware_id, "weight": weight})
+
     return resolved
+
+
+RUNWARE_FAILED_RETRY = 30 * 60      # seconds before a LoRA Runware failed to process is tried again
+_RUNWARE_MAPPING_LOCK = threading.Lock()
+_RUNWARE_UPLOAD_LOCKS = {}          # URL -> lock: one upload per file, however many jobs want it
+_RUNWARE_FAILED = {}                # (URL, arch) -> (when, reason)
+
+
+class RunwareProcessingFailed(Exception):
+    """Runware downloaded the LoRA and then said "failed". Uploading again at once fails the same way."""
+
+
+def upload_and_map(url, runware_api_key, arch, visible):
+    """Upload a LoRA once, even when several jobs need it at the same moment, and record its AIR.
+    Blocking: an upload takes minutes, and the jobs that need it wait for it."""
+    failed = _RUNWARE_FAILED.get((url, arch))
+    if failed and time.time() - failed[0] < RUNWARE_FAILED_RETRY:
+        raise RunwareProcessingFailed(failed[1])
+    with _RUNWARE_MAPPING_LOCK:
+        lock = _RUNWARE_UPLOAD_LOCKS.setdefault(url, threading.Lock())
+    with lock:
+        done = mapped_lora(load_runware_lora_mapping(), url, arch, visible)
+        if done:                    # another job uploaded it while this one waited
+            return done
+        try:
+            runware_id = upload_lora_to_runware(url, runware_api_key, arch)
+        except RunwareProcessingFailed as e:
+            _RUNWARE_FAILED[(url, arch)] = (time.time(), str(e))
+            raise
+        _RUNWARE_FAILED.pop((url, arch), None)
+        entry = {"runware_id": runware_id, "architecture": ARCH_RUNWARE[arch], "uploaded_at": datetime.utcnow().isoformat()}
+        with _RUNWARE_MAPPING_LOCK:     # re-read: other jobs may have mapped other files meanwhile
+            mapping = load_runware_lora_mapping()
+            mapping[url] = entry
+            try:
+                save_runware_lora_mapping(mapping)
+            except Exception as e:
+                logger.error(f"🌐 [Runware] Failed saving mapping file: {e}")
+        logger.info(f"🌐 [Runware] Uploaded and mapped {url} -> {runware_id}")
+        return runware_id
 
 
 #!/usr/bin/env python3

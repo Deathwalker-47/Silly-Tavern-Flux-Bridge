@@ -233,7 +233,7 @@ class RunwareTests(ProviderCase):
         http = FakeHTTP([("runware", FakeResponse(200, {"data": [{"imageURL": "https://out/1.jpg", "cost": 0.0129}]})),
                          ("https://out", FakeResponse(200, content=small_jpeg()))])
         with unittest.mock.patch.object(MediaConfig, "RUNWARE_ENDPOINT", "https://runware/v1"), \
-             unittest.mock.patch.object(loras, "_resolve", lambda items, key, arch: seen.append(arch) or [{"lora": "a@1", "weight": 1.0}]), \
+             unittest.mock.patch.object(loras, "_resolve", lambda items, key, arch, failures: seen.append(arch) or [{"lora": "a@1", "weight": 1.0}]), \
              http.patch():
             runware = Runware()
             req = req_for("image", "runware", "zimage", loras=[lora_item], aspect_ratio="9:16")
@@ -250,7 +250,7 @@ class RunwareTests(ProviderCase):
         http = FakeHTTP([("runware", replies), ("https://out", FakeResponse(200, content=small_jpeg()))])
         lora_item = {"url": "https://hf/a.safetensors", "weight": 1.0}
         with unittest.mock.patch.object(MediaConfig, "RUNWARE_ENDPOINT", "https://runware/v1"), \
-             unittest.mock.patch.object(loras, "_resolve", lambda items, key, arch: [{"lora": "a@1", "weight": 1.0}]), \
+             unittest.mock.patch.object(loras, "_resolve", lambda items, key, arch, failures: [{"lora": "a@1", "weight": 1.0}]), \
              unittest.mock.patch.object(runware_module, "LORA_READY_POLL", 0), \
              unittest.mock.patch.object(runware_module, "LORA_READY_WAIT", wait), \
              http.patch():
@@ -273,6 +273,19 @@ class RunwareTests(ProviderCase):
         error, calls = self.render_with([refused, self.RENDERED], 300)
         self.assertIn("Invalid value", error)
         self.assertEqual(calls, 1)
+
+    def test_a_lora_runware_cant_use_fails_the_job_with_its_name_and_reason(self):
+        def resolve(items, _key, _arch, failures):
+            failures.append((items[1]["lora"], "Runware couldn't process this LoRA: Unsupported LoRA keys."))
+            return [{"lora": "a@1", "weight": 1.0}]
+        req = req_for("image", "runware", "flux-lora", aspect_ratio="9:16",
+                      loras=[{"id": "Maya", "url": "https://hf/a.safetensors", "weight": 1.0},
+                             {"id": "NSFW_master", "url": "https://hf/b.safetensors", "weight": 0.6}])
+        http = FakeHTTP([])
+        with unittest.mock.patch.object(loras, "_resolve", resolve), http.patch():
+            with self.assertRaisesRegex(RuntimeError, r"couldn't use 1 of 2 LoRAs\. NSFW_master: Runware couldn't process this LoRA: Unsupported"):
+                run(Runware().submit(req))
+        self.assertEqual(http.calls, [], "nothing was rendered without it")
 
     def test_a_lora_for_another_architecture_explains_itself(self):
         text = describe_errors([{"code": "unsupportedLoraModel", "loraModelArchitecture": "flux1d", "baseModelArchitecture": "z_image"}])

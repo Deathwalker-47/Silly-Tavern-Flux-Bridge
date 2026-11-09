@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 import types
 import unittest
 import unittest.mock
@@ -285,6 +287,41 @@ class HelperModelTests(unittest.TestCase):
         self.assertEqual(result, "a long scene")
 
 
+class FakeRunwareSocket:
+    """Runware's WebSocket API: authentication, then one message per upload status.
+    A reply is a status item, {"error": ...}, or {"other_task": True} to come from another task."""
+
+    def __init__(self, replies, refuse_key=False):
+        self.replies, self.refuse_key, self.sent, self.was_opened = list(replies), refuse_key, [], False
+
+    def opened(self):
+        self.was_opened = True
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def send(self, text):
+        self.sent.extend(json.loads(text))
+
+    def recv(self, timeout=None):
+        if len(self.sent) == 1:
+            if self.refuse_key:
+                return json.dumps({"errors": [{"code": "invalidApiKey", "message": "Invalid API key"}]})
+            return json.dumps({"data": [{"taskType": "authentication", "connectionSessionUUID": "s1"}]})
+        if not self.replies:
+            raise TimeoutError()
+        reply = dict(self.replies.pop(0))
+        task = self.sent[1]["taskUUID"]
+        if "error" in reply:
+            return json.dumps({"errors": [{"message": reply["error"], "taskUUID": task}]})
+        task = "another-task" if reply.pop("other_task", False) else task
+        return json.dumps({"data": [{"taskType": "modelUpload", "taskUUID": task, "air": self.sent[1]["air"], **reply}]})
+
+
 class RunwareLoraMappingTests(unittest.TestCase):
     """Two of 26 mapped LoRAs pointed at models Runware no longer had (uploads that timed out)."""
     URL = "https://huggingface.co/u/r/resolve/main/a.safetensors"
@@ -298,6 +335,7 @@ class RunwareLoraMappingTests(unittest.TestCase):
         with unittest.mock.patch.object(bridge, "load_runware_lora_mapping", return_value={self.URL: dict(entry)}), \
              unittest.mock.patch.object(bridge, "save_runware_lora_mapping", side_effect=saved.update), \
              unittest.mock.patch.object(bridge, "runware_private_loras", return_value=visible), \
+             unittest.mock.patch.dict(bridge._RUNWARE_FAILED, clear=True), \
              unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=upload):
             resolved = bridge.resolve_runware_loras([{"lora": self.URL, "weight": 0.8}], "key", arch)
         return resolved, uploads, saved
@@ -333,52 +371,79 @@ class RunwareLoraMappingTests(unittest.TestCase):
             self.assertEqual(bridge.runware_private_loras("key"), expected)
         self.assertEqual(calls, [0, 2])  # second call served from the cache
 
-    def test_upload_uses_httpx_and_surfaces_errors(self):
-        ok = lambda *a, **kw: types.SimpleNamespace(status_code=200)  # noqa: E731  (HEAD on the source file)
-        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"errors": [{"message": "bad file"}]})
-        fake = types.SimpleNamespace(head=ok, post=lambda *a, **kw: reply, TimeoutException=TimeoutError)
-        with unittest.mock.patch.object(bridge, "httpx", fake):
-            with self.assertRaisesRegex(Exception, "bad file"):
-                bridge.upload_lora_to_runware(self.URL, "key", "flux")
+    # What Runware's WebSocket sent for a real upload on 2026-11-09, 143 s from first to last.
+    PROCESSED = [{"status": "model re-processing"}, {"status": "validated"}, {"status": "downloaded"},
+                 {"status": "ready", "message": "Model successfully deployed and ready for use."}]
 
-        def slow(*_a, **_kw):
-            raise TimeoutError()
-        with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(head=ok, post=slow, TimeoutException=TimeoutError)):
-            self.assertTrue(bridge.upload_lora_to_runware(self.URL, "key", "flux").startswith("deathwalker:"))
+    def upload(self, replies, arch="flux", source_status=200):
+        """upload_lora_to_runware against a fake Runware socket. Returns (result or exception, socket, HEAD headers)."""
+        socket, heads = FakeRunwareSocket(replies), []
+        fake = types.SimpleNamespace(head=lambda _url, **kw: heads.append(kw["headers"]) or types.SimpleNamespace(status_code=source_status))
+        with unittest.mock.patch.object(bridge, "httpx", fake), \
+             unittest.mock.patch("websockets.sync.client.connect", lambda *_a, **_kw: socket.opened()):
+            try:
+                return bridge.upload_lora_to_runware(self.URL, "key", arch), socket, heads
+            except Exception as e:
+                return e, socket, heads
+
+    def test_an_upload_is_followed_until_runware_can_use_it(self):
+        # Over HTTP Runware answered "validated" and nothing more, so uploads it went on to
+        # fail looked fine until the LoRA's first job died with "Invalid value for 'lora.model'".
+        result, socket, _ = self.upload(self.PROCESSED)
+        self.assertEqual(result, bridge.generate_air_id_from_url(self.URL)[0])
+        self.assertEqual(socket.sent[0], {"taskType": "authentication", "apiKey": "key"})
+        self.assertEqual(socket.sent[1]["taskType"], "modelUpload")
+        self.assertEqual(socket.replies, [], "it read every status up to ready")
+
+    def test_a_failed_upload_raises_runwares_reason(self):
+        result, _, _ = self.upload([{"status": "validated"}, {"status": "downloaded"},
+                                    {"status": "failed", "message": "Unsupported LoRA keys."}])
+        self.assertIsInstance(result, bridge.RunwareProcessingFailed)
+        self.assertIn("Unsupported LoRA keys.", str(result))
+
+    def test_runware_errors_and_a_refused_key_surface(self):
+        result, _, _ = self.upload([{"error": "bad file"}])
+        self.assertIn("bad file", str(result))
+        self.assertNotIsInstance(result, bridge.RunwareProcessingFailed)
+        socket = FakeRunwareSocket([], refuse_key=True)
+        with unittest.mock.patch.object(bridge, "httpx", types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=200))), \
+             unittest.mock.patch("websockets.sync.client.connect", lambda *_a, **_kw: socket.opened()), \
+             self.assertRaisesRegex(Exception, "refused the key: Invalid API key"):
+            bridge.upload_lora_to_runware(self.URL, "key", "flux")
+
+    def test_other_tasks_messages_are_ignored(self):
+        result, socket, _ = self.upload([{"status": "failed", "other_task": True}, *self.PROCESSED])
+        self.assertTrue(str(result).startswith("deathwalker:"), result)
+
+    def test_an_upload_still_processing_when_the_wait_ends_keeps_its_air(self):
+        # The render waits for a LoRA that's still processing, and the mapping is re-checked later.
+        result, _, _ = self.upload([{"status": "validated"}])     # then silence: recv times out
+        self.assertTrue(str(result).startswith("deathwalker:"), result)
+        with unittest.mock.patch.object(bridge, "RUNWARE_UPLOAD_WAIT", 0):
+            result, socket, _ = self.upload(self.PROCESSED)
+        self.assertTrue(str(result).startswith("deathwalker:"), result)
+        self.assertEqual(len(socket.replies), 4, "no wait left, so nothing was read")
 
     def test_upload_refuses_a_deleted_source_file(self):
         # Runware answers "model re-processing" for a dead link and the LoRA never works.
-        posted = []
-        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=404),
-                                     post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
-        with unittest.mock.patch.object(bridge, "httpx", fake):
-            with self.assertRaisesRegex(Exception, "HTTP 404"):
-                bridge.upload_lora_to_runware(self.URL, "key", "flux")
-        self.assertEqual(posted, [])
+        result, socket, _ = self.upload(self.PROCESSED, source_status=404)
+        self.assertIn("HTTP 404", str(result))
+        self.assertFalse(socket.was_opened)
 
     def test_upload_refuses_a_private_source_file(self):
-        posted = []
-        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=403),
-                                     post=lambda *a, **kw: posted.append(1), TimeoutException=TimeoutError)
-        with unittest.mock.patch.object(bridge, "httpx", fake):
-            with self.assertRaisesRegex(Exception, "isn't public.*Set HF_TOKEN"):
-                bridge.upload_lora_to_runware(self.URL, "key", "flux")
-            with unittest.mock.patch.object(bridge.ms.MediaConfig, "HF_TOKEN", "hf_test"), \
-                 self.assertRaisesRegex(Exception, "HF_TOKEN can't read"):
-                bridge.upload_lora_to_runware(self.URL, "key", "flux")
-        self.assertEqual(posted, [])
+        result, socket, _ = self.upload(self.PROCESSED, source_status=403)
+        self.assertRegex(str(result), "isn't public.*Set HF_TOKEN")
+        with unittest.mock.patch.object(bridge.ms.MediaConfig, "HF_TOKEN", "hf_test"):
+            result, socket, _ = self.upload(self.PROCESSED, source_status=403)
+        self.assertIn("HF_TOKEN can't read", str(result))
+        self.assertFalse(socket.was_opened)
 
     def test_a_private_file_reaches_runware_as_a_bridge_link_and_the_check_sends_the_token(self):
-        heads, posts = [], []
-        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"data": [{"status": "ready"}]})
-        fake = types.SimpleNamespace(head=lambda _url, **kw: heads.append(kw["headers"]) or types.SimpleNamespace(status_code=200),
-                                     post=lambda *_a, **kw: posts.append(kw["json"][0]) or reply, TimeoutException=TimeoutError)
-        with unittest.mock.patch.object(bridge, "httpx", fake), \
-             unittest.mock.patch.multiple(bridge.ms.MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test",
+        with unittest.mock.patch.multiple(bridge.ms.MediaConfig, HF_TOKEN="hf_test", PUBLIC_BASE_URL="https://bridge.test",
                                           LORA_LINK_SECRET="test-secret"):
-            bridge.upload_lora_to_runware(self.URL, "key", "flux")
+            _, socket, heads = self.upload(self.PROCESSED)
         self.assertEqual(heads, [{"Authorization": "Bearer hf_test"}])
-        self.assertRegex(posts[0]["downloadURL"], r"^https://bridge\.test/lora-files/[\w-]+\.[\w-]{32}/a\.safetensors$")
+        self.assertRegex(socket.sent[1]["downloadURL"], r"^https://bridge\.test/lora-files/[\w-]+\.[\w-]{32}/a\.safetensors$")
 
     def test_flux_air_is_the_plain_url_hash_so_uploads_keep_their_id(self):
         expected = hashlib.sha256(self.URL.lower().encode()).hexdigest()[:12]
@@ -386,18 +451,66 @@ class RunwareLoraMappingTests(unittest.TestCase):
         self.assertNotEqual(bridge.generate_air_id_from_url(self.URL, "zimage")[0], f"deathwalker:{expected}@1")
 
     def test_zimage_upload_sends_its_architecture(self):
-        sent = []
-        reply = types.SimpleNamespace(status_code=200, text="", json=lambda: {"data": [{"status": "ready"}]})
+        air, socket, _ = self.upload(self.PROCESSED, arch="zimage")
+        self.assertEqual(socket.sent[1]["architecture"], "z_image")
+        self.assertEqual(socket.sent[1]["air"], air)
 
-        def post(*_a, **kw):
-            sent.append(kw["json"][0])
-            return reply
-        fake = types.SimpleNamespace(head=lambda *a, **kw: types.SimpleNamespace(status_code=200), post=post,
-                                     TimeoutException=TimeoutError)
-        with unittest.mock.patch.object(bridge, "httpx", fake):
-            air = bridge.upload_lora_to_runware(self.URL, "key", "zimage")
-        self.assertEqual(sent[0]["architecture"], "z_image")
-        self.assertEqual(sent[0]["air"], air)
+    def test_a_lora_runware_failed_to_process_is_reported_and_not_uploaded_again_at_once(self):
+        calls = []
+
+        def failing(url, _key, _arch):
+            calls.append(url)
+            raise bridge.RunwareProcessingFailed("Runware couldn't process this LoRA: Unsupported LoRA keys.")
+        with unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=failing), \
+             unittest.mock.patch.object(bridge, "load_runware_lora_mapping", return_value={}), \
+             unittest.mock.patch.dict(bridge._RUNWARE_FAILED, clear=True):
+            for _ in range(2):
+                failures = []
+                self.assertEqual(bridge.resolve_runware_loras([{"lora": self.URL, "weight": 1}], "key", "flux", failures), [])
+                self.assertEqual(failures, [(self.URL, "Runware couldn't process this LoRA: Unsupported LoRA keys.")])
+            self.assertEqual(len(calls), 1, "the second job got the reason without another upload")
+            with unittest.mock.patch.object(bridge, "RUNWARE_FAILED_RETRY", 0):
+                bridge.resolve_runware_loras([{"lora": self.URL, "weight": 1}], "key", "flux", [])
+            self.assertEqual(len(calls), 2, "and it's tried again later")
+
+    def test_a_network_error_is_not_remembered(self):
+        calls = []
+
+        def flaky(url, _key, _arch):
+            calls.append(url)
+            raise ConnectionError("reset")
+        with unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=flaky), \
+             unittest.mock.patch.object(bridge, "load_runware_lora_mapping", return_value={}), \
+             unittest.mock.patch.dict(bridge._RUNWARE_FAILED, clear=True):
+            for _ in range(2):
+                failures = []
+                bridge.resolve_runware_loras([{"lora": self.URL, "weight": 1}], "key", "flux", failures)
+                self.assertEqual(failures, [(self.URL, "reset")])
+        self.assertEqual(len(calls), 2)
+
+    def test_two_jobs_that_need_the_same_new_lora_upload_it_once(self):
+        stored, uploads, release = {}, [], threading.Event()
+
+        def upload(url, _key, _arch):
+            uploads.append(url)
+            release.wait(5)             # the second job arrives while this upload is processing
+            return "deathwalker:new@1"
+        results = []
+        with unittest.mock.patch.object(bridge, "upload_lora_to_runware", side_effect=upload), \
+             unittest.mock.patch.object(bridge, "load_runware_lora_mapping", side_effect=lambda: json.loads(json.dumps(stored))), \
+             unittest.mock.patch.object(bridge, "save_runware_lora_mapping", side_effect=stored.update), \
+             unittest.mock.patch.object(bridge, "runware_private_loras", return_value={}):
+            jobs = [threading.Thread(target=lambda: results.append(
+                bridge.resolve_runware_loras([{"lora": self.URL, "weight": 1}], "key", "flux"))) for _ in range(2)]
+            for job in jobs:
+                job.start()
+            time.sleep(0.2)
+            release.set()
+            for job in jobs:
+                job.join(5)
+        self.assertEqual(uploads, [self.URL])
+        self.assertEqual(results, [[{"lora": "deathwalker:new@1", "weight": 1}]] * 2)
+        self.assertEqual(stored[self.URL]["runware_id"], "deathwalker:new@1")
 
     def test_old_mapping_entries_count_as_flux(self):
         entry = {"runware_id": "deathwalker:old@1", "uploaded_at": "2026-01-03T00:02:24"}
