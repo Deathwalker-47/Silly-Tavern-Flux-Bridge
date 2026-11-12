@@ -186,11 +186,11 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
     },
     "pixeldojo": {
         "seedream-4.5": [_i("pixeldojo", "seedream-4.5", "seedream-4", "Seedream 4.5", REF, tested=True, max_refs=14, ref_field="image_urls",
-                            aspects=ALL_SHAPES, lowest="portrait_9_16", hint="1 cr, 14 refs", build="seedream_4")],
+                            aspects=ALL_SHAPES, lowest="portrait_9_16", hint="1.25 cr, 14 refs", build="seedream_4")],
         "seedream-5-pro": [_i("pixeldojo", "seedream-5-pro", "seedream-5", "Seedream 5", REF, tested=True, max_refs=10, ref_field="image_urls",
-                              lowest="768x1344", hint="1.25 cr, 10 refs", hidden=True, build="seedream_5", sizes=FLUX_SIZES)],
+                              lowest="768x1344", hint="1.5 cr at 1K, 10 refs", hidden=True, build="seedream_5", sizes=FLUX_SIZES)],
         "best": [_i("pixeldojo", "best", "best", "The Best Option", REF, tested=True, max_refs=10, aspects=ALL_SHAPES, lowest="1k",
-                    hint="2.25 cr: Seedream 5 scene, then Seedream 4.5 face pass")],
+                    hint="2.75 cr: Seedream 5 scene (1.5 cr), then Seedream 4.5 face pass (1.25 cr)")],
     },
 }
 
