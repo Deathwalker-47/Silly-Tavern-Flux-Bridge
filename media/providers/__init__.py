@@ -12,6 +12,8 @@ from .pixeldojo import PixelDojo
 from .replicate import Replicate, replicate_create, replicate_wait
 from .runware import Runware
 from .sogni import Sogni
+from .spicyapi import SpicyAPI
+from .venice import Venice
 
 PROVIDERS: Dict[str, Provider] = {
     "runware": Runware(),
@@ -19,6 +21,8 @@ PROVIDERS: Dict[str, Provider] = {
     "sogni": Sogni(),
     "replicate": Replicate(),
     "pixeldojo": PixelDojo(),
+    "venice": Venice(),
+    "spicyapi": SpicyAPI(),
     "mock": Mock(),
 }
 

@@ -252,7 +252,7 @@ async def run_image(job: Any) -> None:
     if no_lora:
         job.report("planning", "No LoRA for this character, using Seedream 4.5 with references")
         telemetry.record("pipeline", "no_lora_switch", character=people[0].name if people else "")
-        option = image_route("seedream-4.5", (option.provider, "nanogpt", "pixeldojo"))
+        option = image_route("seedream-4.5", (option.provider, "nanogpt", "spicyapi", "pixeldojo"))
         job.ctx.force_pov = False
         mode = option.modes[0]
         plan, people = await plan_shot(job, option, mode)      # re-plan for the new model's format
@@ -319,7 +319,7 @@ def keyframe_route(job: Any, people: Sequence[Any]) -> Tuple[catalog.ModelOption
         loras.character_lora(people[0].name, people[0].sd_prompt, "flux")
     if flux:
         return image_route("flux-lora", (active, "runware", "replicate")), True
-    return image_route("seedream-4.5", (active, "nanogpt", "pixeldojo")), False
+    return image_route("seedream-4.5", (active, "nanogpt", "spicyapi", "pixeldojo")), False
 
 
 async def make_keyframe(job: Any, plan: Plan, people: Sequence[Any], prompt: str, extra: Sequence[assets.Asset] = (),

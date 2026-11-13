@@ -288,6 +288,10 @@ in SillyTavern, because TavernVoice calls those providers from the browser.
   Replicate  REPLICATE_API_TOKEN  Flux Dev + LoRA (backup)
   PixelDojo  PIXELDOJO_API_KEY    Seedream 4.5, The Best Option, video (billed in
                                   credits, the most expensive route)
+  SpicyAPI   SPICYAPI_API_KEY     Flux and Z-Image + LoRA, Qwen Edit, Seedream 4.5,
+                                  The Best Option, every video family (no filter)
+  Venice     VENICE_API_KEY       Qwen Edit, Seedream 5 Pro, Wan 3.0, MiniMax H3,
+                                  Wan 2.2; Seedance and LTX wait on a test
 
 Private LoRAs: when the LoRA files sit in a private Hugging Face repo, add a
 Hugging Face token (HF_TOKEN) the same way. Read access to that repo is enough.

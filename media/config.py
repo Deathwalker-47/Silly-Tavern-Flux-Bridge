@@ -46,6 +46,12 @@ class MediaConfig:
     PIXELDOJO_API_KEY = os.getenv("PIXELDOJO_API_KEY", "")
     PIXELDOJO_BASE = os.getenv("PIXELDOJO_BASE", "https://pixeldojo.ai/api/v1").rstrip("/")
 
+    # Pay as you go, no subscription. Venice's own uncensored flag is per model; SpicyAPI has no filter.
+    VENICE_API_KEY = os.getenv("VENICE_API_KEY", "")
+    VENICE_BASE = os.getenv("VENICE_BASE", "https://api.venice.ai/api/v1").rstrip("/")
+    SPICYAPI_API_KEY = os.getenv("SPICYAPI_API_KEY", "")
+    SPICYAPI_BASE = os.getenv("SPICYAPI_BASE", "https://api.spicyapi.ai/api/v1").rstrip("/")
+
     VIDEO_MOCK_PROVIDER = _env_bool("VIDEO_MOCK_PROVIDER", False)
     MOCK_RENDER_SECONDS = float(os.getenv("MOCK_RENDER_SECONDS", 2))
 
