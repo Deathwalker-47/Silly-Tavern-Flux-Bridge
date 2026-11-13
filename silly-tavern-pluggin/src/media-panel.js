@@ -226,8 +226,12 @@ export async function openMediaPanel(card) {
     const openLibrary = (slot) => {
         librarySlot = slot;
         $root.find('.fm-library-title').text(`Choose an image for ${who.name}: ${slotLabel(slot)}`);
-        $root.find('.fm-library').removeClass('fm-hidden');
-        renderLibrary();
+        const $library = $root.find('.fm-library').removeClass('fm-hidden');
+        // On a phone it opens below every slot, so bring it into view, then again once the grid has filled
+        // (a smooth scroll gets cut off as it fills).
+        const reveal = () => $library[0].scrollIntoView({ block: 'nearest' });
+        reveal();
+        renderLibrary().then(() => librarySlot === slot && reveal());
     };
 
     const renderGallery = async (append = false) => {

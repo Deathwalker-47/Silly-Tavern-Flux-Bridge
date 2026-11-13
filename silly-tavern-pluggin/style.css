@@ -212,6 +212,11 @@
     padding: 4px 8px;
 }
 
+.fm-lib-more {
+    align-self: center;
+    white-space: nowrap;
+}
+
 .fm-lib-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
