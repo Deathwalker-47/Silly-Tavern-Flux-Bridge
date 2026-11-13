@@ -14,14 +14,16 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from .config import MediaConfig
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY,              -- sha256 prefix of the uploaded file
   path TEXT NOT NULL, mime TEXT NOT NULL, bytes INTEGER NOT NULL,
   purpose TEXT NOT NULL DEFAULT 'reference',  -- reference | frame
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  label TEXT,                       -- who and which slot it was first uploaded for, shown in the library
+  hidden INTEGER NOT NULL DEFAULT 0 -- out of the library; the file stays for any slot still using it
 );
 CREATE TABLE IF NOT EXISTS asset_remote (   -- what each provider calls this file, so it's uploaded once
   asset_id TEXT NOT NULL, provider TEXT NOT NULL, handle TEXT NOT NULL, expires_at INTEGER,
@@ -97,8 +99,17 @@ def connect(path: Optional[Path] = None) -> sqlite3.Connection:
             _conn.execute("PRAGMA journal_mode=WAL")
             _conn.execute("PRAGMA synchronous=NORMAL")
             _conn.executescript(SCHEMA)
+            _add_columns(_conn, "assets", {"label": "TEXT", "hidden": "INTEGER NOT NULL DEFAULT 0"})
             _conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         return _conn
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns: Dict[str, str]) -> None:
+    """Columns added after a database was made: CREATE TABLE IF NOT EXISTS leaves an old table as it was."""
+    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, kind in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
 
 def close() -> None:
@@ -202,13 +213,25 @@ def asset(asset_id: str) -> Optional[Dict[str, Any]]:
     return _one("SELECT * FROM assets WHERE id = ?", (asset_id,))
 
 
-def put_asset(asset_id: str, path: str, mime: str, size: int, purpose: str) -> None:
-    _run("INSERT OR REPLACE INTO assets (id, path, mime, bytes, purpose, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-         (asset_id, path, mime, size, purpose, int(time.time())))
+def put_asset(asset_id: str, path: str, mime: str, size: int, purpose: str, label: Optional[str] = None) -> None:
+    _run("INSERT OR REPLACE INTO assets (id, path, mime, bytes, purpose, created_at, label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+         (asset_id, path, mime, size, purpose, int(time.time()), label or None))
 
 
-def promote_asset(asset_id: str) -> None:
-    _run("UPDATE assets SET purpose = 'reference' WHERE id = ?", (asset_id,))
+def reuse_asset(asset_id: str, label: Optional[str]) -> None:
+    """An image uploaded again as a reference: back in the library, and labelled if it had no label yet."""
+    _run("UPDATE assets SET purpose = 'reference', hidden = 0, label = COALESCE(NULLIF(label, ''), ?) WHERE id = ?",
+         (label or None, asset_id))
+
+
+def library(limit: int, offset: int) -> List[Dict[str, Any]]:
+    """Every reference image uploaded so far, newest first, minus the ones taken out."""
+    return _rows("SELECT * FROM assets WHERE purpose = 'reference' AND hidden = 0 ORDER BY created_at DESC, rowid DESC "
+                 "LIMIT ? OFFSET ?", (limit, offset))
+
+
+def hide_asset(asset_id: str) -> None:
+    _run("UPDATE assets SET hidden = 1 WHERE id = ?", (asset_id,))
 
 
 def stale_frames(before: int) -> List[Dict[str, Any]]:

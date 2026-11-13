@@ -46,7 +46,7 @@ class CatalogTests(unittest.TestCase):
                             self.assertIn(wanted, tasks, f"{name} {mode}")
 
     def test_the_best_option_has_both_steps_on_spicyapi(self):
-        self.assertTrue(catalog.find("image", "spicyapi", "seedream-5-pro"))
+        self.assertTrue(catalog.find("image", "spicyapi", "seedream-5.5"))
         self.assertTrue(catalog.find("image", "spicyapi", "seedream-4.5"))
         self.assertIsNone(catalog.find("image", "venice", "best"))
 
@@ -94,6 +94,12 @@ class SpicyBodyTests(unittest.TestCase):
         req = req_for("image", "spicyapi", "seedream-5-pro", aspect_ratio="16:9")
         self.assertEqual(spicyapi.seedream(req, ["r"]), {"prompt": req.prompt, "aspect_ratio": "16:9", "resolution": "1k", "image_urls": ["r"]})
 
+    def test_seedream_55_asks_for_jpeg_at_the_1k_price(self):
+        req = req_for("image", "spicyapi", "seedream-5.5", aspect_ratio="9:16")
+        self.assertEqual(spicyapi.seedream(req, []), {"prompt": req.prompt, "aspect_ratio": "9:16", "resolution": "1.5k",
+                                                      "output_format": "jpeg"})
+        self.assertEqual(spicyapi.task_model(req), "bytedance/seedream-5.5/text-to-image")
+
     def test_loras_are_capped_at_three(self):
         stack = [{"url": f"https://hf/{n}.safetensors", "weight": 0.5 + n / 10} for n in range(5)] + [{"id": "no-url"}]
         req = req_for("image", "spicyapi", "flux-lora", aspect_ratio="9:16", seed=1, loras=stack)
@@ -108,6 +114,17 @@ class SpicyBodyTests(unittest.TestCase):
         self.assertEqual(spicyapi.output_url(record, "video"), "https://o/c.mp4")
         with self.assertRaisesRegex(RuntimeError, "without a file"):
             spicyapi.output_url({"output": {"assets": []}}, "video")
+
+
+class BestSceneTests(MediaCase):
+    def test_the_scene_step_takes_seedream_55_where_it_is_allowed(self):
+        from media.pipelines import best_scene_route
+        with unittest.mock.patch.multiple(MediaConfig, SPICYAPI_API_KEY="k", NANOGPT_API_KEY="k"):
+            self.assertEqual(best_scene_route("spicyapi").family, "seedream-5.5")
+            self.assertEqual(best_scene_route("nanogpt").family, "seedream-5-pro")     # no 5.5 route there
+            option = catalog.find("image", "spicyapi", "seedream-5.5")
+            with unittest.mock.patch.object(option, "nsfw", "check"):
+                self.assertEqual(best_scene_route("spicyapi").family, "seedream-5-pro")
 
 
 class SpicyFlowTests(MediaCase):

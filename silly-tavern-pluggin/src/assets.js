@@ -1,6 +1,6 @@
 // Images on their way to the bridge: the size window, then uploaded once.
 
-import { bridge, bridgeUpload, cachedCapabilities } from './bridge.js';
+import { bridge, bridgeBlob, bridgeUpload, cachedCapabilities } from './bridge.js';
 
 const byUrl = new Map();
 
@@ -35,16 +35,31 @@ export async function windowProblem(file) {
     return '';
 }
 
-/** Stores an image on the bridge, once, and returns its asset id. */
-export async function uploadAsset(blob, purpose = 'reference') {
+/**
+ * Stores an image on the bridge, once, and returns its asset id. A reference joins the
+ * shared library under its label, such as "Maya, Face 1".
+ */
+export async function uploadAsset(blob, purpose = 'reference', label = '') {
     const hash = await hashOf(blob);
     if (hash && purpose === 'frame') {
         const { exists } = await bridge(`/assets/${hash}/exists`, { timeout: 15000 }).catch(() => ({ exists: false }));
         if (exists) return hash;
     }
-    const { asset_id } = await bridgeUpload(`/assets?purpose=${purpose}`, blob);
+    const named = label ? `&label=${encodeURIComponent(label)}` : '';
+    const { asset_id } = await bridgeUpload(`/assets?purpose=${purpose}${named}`, blob);
     return asset_id;
 }
+
+// ---- the shared library: every reference uploaded for anyone, to pick again without uploading ----
+
+/** One page, newest first: [{ id, label, created_at, width, height, thumb }] and whether more follow. */
+export const libraryPage = (offset = 0, limit = 48) => bridge(`/assets?limit=${limit}&offset=${offset}`, { timeout: 30000 });
+
+/** The full stored image, to save into a slot's folder. */
+export const libraryImage = (id) => bridgeBlob(`/assets/${encodeURIComponent(id)}/file`, { auth: true });
+
+/** Out of the library only. Slots already using it keep it. */
+export const removeFromLibrary = (id) => bridge(`/assets/${encodeURIComponent(id)}`, { method: 'DELETE', timeout: 15000 });
 
 /** A SillyTavern file as a bridge asset. Message images and keyframes are frames, so they skip the window. */
 export async function urlToAsset(url, purpose = 'frame') {

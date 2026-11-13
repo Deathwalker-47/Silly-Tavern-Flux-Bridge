@@ -84,9 +84,13 @@ export async function bridgeUpload(path, blob) {
     return data;
 }
 
-/** Downloads a bridge-hosted file (/media/files/<id>) as a Blob. */
-export async function bridgeBlob(path) {
-    const res = await fetch(`${bridgeBase()}${path}`);
+/**
+ * Downloads a bridge-hosted file as a Blob. /media/files/<id> needs no token; library
+ * images (/assets/<id>/file) do, so pass auth for those.
+ */
+export async function bridgeBlob(path, { auth = false } = {}) {
+    const token = auth ? ctx().extensionSettings?.[SETTINGS_KEY]?.bridgeToken?.trim() : '';
+    const res = await fetch(`${bridgeBase()}${path}`, token ? { headers: { 'X-Edit-Token': token } } : undefined);
     if (!res.ok) throw new BridgeError(`Could not download ${path} (${res.status})`, res.status);
     return await res.blob();
 }
