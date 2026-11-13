@@ -1,5 +1,7 @@
-"""Reference window, metadata stripping and the one-upload-per-file rule."""
+"""Reference window, metadata stripping, the one-upload-per-file rule and the shared library."""
+import base64
 from io import BytesIO
+import sqlite3
 import unittest
 
 from media_support import MediaCase, noisy_jpeg, small_jpeg
@@ -90,6 +92,63 @@ class StoreTests(MediaCase):
     def test_a_missing_reference_says_to_upload_again(self):
         with self.assertRaisesRegex(KeyError, "Upload it again"):
             assets.load("0" * 32)
+
+
+class LibraryTests(MediaCase):
+    """Every reference uploaded for anyone can be picked again without uploading it."""
+
+    def test_references_are_listed_newest_first_with_a_thumbnail_and_frames_are_not(self):
+        old, _ = assets.store(noisy_jpeg(800, 1200), "reference", "Maya, Face 1")
+        db._run("UPDATE assets SET created_at = 1 WHERE id = ?", (old.id,))
+        new, _ = assets.store(noisy_jpeg(1200, 800), "reference", "  Persona,\n Body ")
+        assets.store(noisy_jpeg(600, 600), "frame")
+        page = assets.library()
+        self.assertEqual([a["id"] for a in page["assets"]], [new.id, old.id])
+        self.assertFalse(page["more"])
+        first = page["assets"][0]
+        self.assertEqual((first["label"], first["width"], first["height"]), ("Persona, Body", 1200, 800))
+        thumb = Image.open(BytesIO(base64.b64decode(first["thumb"].split(",", 1)[1])))
+        self.assertEqual(max(thumb.size), assets.THUMB_EDGE)
+
+    def test_pages(self):
+        for _ in range(3):
+            assets.store(noisy_jpeg())
+        page = assets.library(limit=2)
+        self.assertEqual((len(page["assets"]), page["more"]), (2, True))
+        rest = assets.library(limit=2, offset=2)
+        self.assertEqual((len(rest["assets"]), rest["more"]), (1, False))
+
+    def test_removing_only_hides_it_and_uploading_it_again_brings_it_back(self):
+        data = noisy_jpeg()
+        asset, _ = assets.store(data, "reference", "Maya, Face 1")
+        self.assertTrue(assets.hide(asset.id))
+        self.assertEqual(assets.library()["assets"], [])
+        self.assertTrue(assets.exists(asset.id), "a slot still using it keeps working")
+        assets.store(data, "reference", "Someone else, Body")
+        listed = assets.library()["assets"]
+        self.assertEqual([(a["id"], a["label"]) for a in listed], [(asset.id, "Maya, Face 1")], "the first label stays")
+        self.assertFalse(assets.hide("0" * 32))
+
+    def test_a_frame_uploaded_again_as_a_reference_joins_with_its_label(self):
+        data = noisy_jpeg(600, 600)
+        frame, _ = assets.store(data, "frame", "not kept for frames")
+        self.assertIsNone(db.asset(frame.id)["label"])
+        self.assertEqual(assets.library()["assets"], [])
+        assets.store(data, "reference", "Maya, Face 2")
+        self.assertEqual([a["label"] for a in assets.library()["assets"]], ["Maya, Face 2"])
+
+    def test_an_older_database_gets_the_new_columns(self):
+        path = self.data / "old.db"
+        old = sqlite3.connect(str(path))
+        old.execute("CREATE TABLE assets (id TEXT PRIMARY KEY, path TEXT NOT NULL, mime TEXT NOT NULL, "
+                    "bytes INTEGER NOT NULL, purpose TEXT NOT NULL DEFAULT 'reference', created_at INTEGER NOT NULL)")
+        old.execute("INSERT INTO assets VALUES ('a', '/gone.jpg', 'image/jpeg', 1, 'reference', 1)")
+        old.commit()
+        old.close()
+        db.connect(path)
+        row = db.asset("a")
+        self.assertEqual((row["label"], row["hidden"]), (None, 0))
+        self.assertEqual(assets.library()["assets"], [], "a missing file is skipped, not an error")
 
 
 class FitTests(MediaCase):

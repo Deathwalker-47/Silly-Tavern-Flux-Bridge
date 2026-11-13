@@ -143,6 +143,23 @@ def main():
         assert client.post("/assets?purpose=frame", content=small_jpeg(), headers=AUTH).status_code == 200
         assert client.post("/assets?purpose=nope", content=photo, headers=AUTH).status_code == 400
 
+        # the shared library: every reference, to pick again; frames stay out
+        assert client.get("/assets").status_code == 401
+        library = client.get("/assets", headers=AUTH).json()
+        assert [a["id"] for a in library["assets"]] == [asset] and library["more"] is False, library
+        assert library["assets"][0]["thumb"].startswith("data:image/jpeg;base64,")
+        assert client.get(f"/assets/{asset}/file").status_code == 401, "asset ids are file hashes, so the file needs the token"
+        full = client.get(f"/assets/{asset}/file", headers=AUTH)
+        assert full.status_code == 200 and full.headers["content-type"] == "image/jpeg" and full.content[:2] == b"\xff\xd8"
+        assert client.get(f"/assets/{'0' * 32}/file", headers=AUTH).status_code == 404
+        labelled = client.post("/assets", params={"label": "Maya, Face 1"}, content=noisy_jpeg(), headers=AUTH).json()["asset_id"]
+        listed = {a["id"]: a["label"] for a in client.get("/assets", headers=AUTH).json()["assets"]}
+        assert listed == {asset: "", labelled: "Maya, Face 1"}, listed
+        assert client.delete(f"/assets/{labelled}", headers=AUTH).json() == {"ok": True}
+        assert [a["id"] for a in client.get("/assets", headers=AUTH).json()["assets"]] == [asset]
+        assert client.get(f"/assets/{labelled}/exists", headers=AUTH).json() == {"exists": True}, "removing keeps the file"
+        assert client.delete(f"/assets/{'0' * 32}", headers=AUTH).status_code == 404
+
         # the director's two quick questions
         assert client.post("/director/decide", json={"reply": "x"}, headers=AUTH).json()["action"] == "image"
         speaker = client.post("/director/next-speaker", json={"members": [{"name": "Maya"}]}, headers=AUTH).json()

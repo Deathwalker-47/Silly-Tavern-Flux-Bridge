@@ -82,6 +82,8 @@ def lora_list(req: RenderRequest) -> List[Dict[str, Any]]:
 def seedream(req: RenderRequest, refs: List[str]) -> Dict[str, Any]:
     inp: Dict[str, Any] = {"prompt": req.prompt, "aspect_ratio": req.aspect_ratio,
                            "resolution": req.option.extra["resolution"]}
+    if req.option.extra.get("output_format"):          # 5.5 sends PNG unless told otherwise
+        inp["output_format"] = req.option.extra["output_format"]
     if refs:
         inp["image_urls"] = refs
     return inp

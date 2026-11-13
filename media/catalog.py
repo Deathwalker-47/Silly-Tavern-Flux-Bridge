@@ -130,6 +130,7 @@ IMAGE_FAMILIES = {
     "qwen-edit": "Qwen Edit",
     "seedream-4.5": "Seedream 4.5",
     "seedream-5-pro": "Seedream 5 Pro",
+    "seedream-5.5": "Seedream 5.5",
     "best": "The Best Option",
 }
 
@@ -217,11 +218,16 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
                             ref_token="Image {n}", aspects=ALL_SHAPES, lowest="2k", usd=0.04, hint="$0.04, 14 refs", build="seedream", resolution="2k",
                             tasks={"reference": "bytedance/seedream-4.5/edit", "text": "bytedance/seedream-4.5/text-to-image"})],
         "seedream-5-pro": [_i("spicyapi", "seedream-5-pro", "bytedance/seedream-5.0-pro", "Seedream 5 Pro", REF, max_refs=10, ref_field="image_urls",
-                              ref_token="Image {n}", aspects=ALL_SHAPES, lowest="1k", usd=0.036, hint="$0.036 at 1K, 10 refs", hidden=True,
+                              ref_token="Image {n}", aspects=ALL_SHAPES, lowest="1k", usd=0.036, hint="$0.036 at 1K, 10 refs",
                               build="seedream", resolution="1k",
                               tasks={"reference": "bytedance/seedream-5.0-pro/edit", "text": "bytedance/seedream-5.0-pro/text-to-image"})],
-        "best": [_i("spicyapi", "best", "best", "The Best Option", REF, max_refs=10, aspects=ALL_SHAPES, lowest="1k", usd=0.076,
-                    hint="$0.076: Seedream 5 Pro scene ($0.036), then Seedream 4.5 face pass ($0.04)")],
+        # 1.5k costs the same as 1k here. The Best Option's scene step uses this one.
+        "seedream-5.5": [_i("spicyapi", "seedream-5.5", "bytedance/seedream-5.5", "Seedream 5.5", REF, max_refs=10, ref_field="image_urls",
+                            ref_token="Image {n}", aspects=ALL_SHAPES, lowest="1.5k", usd=0.02, hint="$0.02 at 1.5K, 10 refs",
+                            build="seedream", resolution="1.5k", output_format="jpeg",
+                            tasks={"reference": "bytedance/seedream-5.5/edit", "text": "bytedance/seedream-5.5/text-to-image"})],
+        "best": [_i("spicyapi", "best", "best", "The Best Option", REF, max_refs=10, aspects=ALL_SHAPES, lowest="1.5k", usd=0.06,
+                    hint="$0.06: Seedream 5.5 scene ($0.02), then Seedream 4.5 face pass ($0.04)")],
     },
     # Venice has no Seedream 4.5, so its Seedream 5 Pro stands alone and there's no Best Option here.
     "venice": {
@@ -230,6 +236,9 @@ IMAGE_CATALOG: Dict[str, Dict[str, List[ModelOption]]] = {
         "seedream-5-pro": [_i("venice", "seedream-5-pro", "seedream-v5-pro", "Seedream 5 Pro", REF, max_refs=6, ref_field="images",
                               aspects=ALL_SHAPES, lowest="1K", usd=0.06, hint="$0.06 at 1K, 6 refs, each after the first $0.0035 more",
                               edit="seedream-v5-pro-edit", generate="seedream-v5-pro", resolution="1K")],
+        "seedream-5.5": [_i("venice", "seedream-5.5", "seedream-v5-5", "Seedream 5.5", REF, max_refs=10, ref_field="images",
+                            aspects=ALL_SHAPES, lowest="1K", usd=0.0255, hint="$0.026 at 1K, 10 refs, each $0.01 more",
+                            edit="seedream-v5-5-edit", generate="seedream-v5-5", resolution="1K")],
         # No Z-Image: Venice's tops out at 1280 px a side (under 1 MP at 9:16), takes no LoRA and isn't tagged uncensored.
     },
 }

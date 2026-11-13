@@ -188,6 +188,102 @@
     50% { opacity: 0.4; }
 }
 
+/* the shared image library, opened from a slot */
+.fm-library {
+    margin-top: 10px;
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fm-library-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.fm-library-head .menu_button,
+.fm-lib-more {
+    margin: 0;
+    padding: 4px 8px;
+}
+
+.fm-lib-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 8px;
+    max-height: 52vh;
+    overflow-y: auto;
+}
+
+.fm-lib-item {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    cursor: pointer;
+    min-width: 0;
+}
+
+.fm-lib-item img {
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+}
+
+.fm-lib-item:hover img {
+    outline: 2px solid #4c9cff;
+}
+
+.fm-lib-used img {
+    border: 2px solid #4caf50;
+}
+
+.fm-lib-label {
+    font-size: 0.75em;
+    opacity: 0.8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fm-lib-badge {
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    font-size: 0.7em;
+    padding: 1px 5px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+}
+
+.fm-lib-remove {
+    position: absolute;
+    right: 4px;
+    top: 4px;
+    margin: 0;
+    padding: 2px 5px;
+    font-size: 0.75em;
+    opacity: 0;
+}
+
+.fm-lib-item:hover .fm-lib-remove {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .fm-lib-remove {
+        opacity: 0.85;
+    }
+}
+
 .fm-lora-status {
     font-size: 0.9em;
     opacity: 0.9;

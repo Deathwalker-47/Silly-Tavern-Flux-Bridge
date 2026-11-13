@@ -77,7 +77,12 @@ API ENDPOINTS
 - GET  /media/keys               where each key comes from, last 4 at most
 - PUT  /media/keys/{provider}    save a key and check it (needs EDIT_API_TOKEN)
 - DELETE /media/keys/{provider}  remove a saved key, back to .env
-- POST /assets                   upload an image (window check, metadata stripped)
+- POST /assets                   upload an image (window check, metadata stripped);
+                                 ?label= names it in the library
+- GET  /assets                   the shared image library: every reference uploaded
+                                 for anyone, newest first, thumbnails inline
+- GET  /assets/{id}/file         a library image, to put in another slot
+- DELETE /assets/{id}            take it out of the library (slots using it keep it)
 - POST /media/lora-status        which characters have a LoRA
 - POST /media/jobs               start an image or video job (returns job_id)
 - GET  /media/jobs               a chat's open jobs
@@ -289,9 +294,10 @@ in SillyTavern, because TavernVoice calls those providers from the browser.
   PixelDojo  PIXELDOJO_API_KEY    Seedream 4.5, The Best Option, video (billed in
                                   credits, the most expensive route)
   SpicyAPI   SPICYAPI_API_KEY     Flux and Z-Image + LoRA, Qwen Edit, Seedream 4.5,
-                                  The Best Option, every video family (no filter)
-  Venice     VENICE_API_KEY       Qwen Edit, Seedream 5 Pro, Wan 3.0, MiniMax H3,
-                                  Wan 2.2; Seedance and LTX wait on a test
+                                  5 Pro and 5.5, The Best Option (its scene is
+                                  Seedream 5.5), every video family (no filter)
+  Venice     VENICE_API_KEY       Qwen Edit, Seedream 5 Pro and 5.5, Wan 3.0,
+                                  MiniMax H3, Wan 2.2; Seedance and LTX wait on a test
 
 Private LoRAs: when the LoRA files sit in a private Hugging Face repo, add a
 Hugging Face token (HF_TOKEN) the same way. Read access to that repo is enough.

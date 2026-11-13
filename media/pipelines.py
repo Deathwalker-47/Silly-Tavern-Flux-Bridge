@@ -287,8 +287,17 @@ def face_edit_prompt(faces: Sequence[Ref], option: Any) -> str:
     return " ".join(lines)
 
 
+def best_scene_route(provider: str) -> catalog.ModelOption:
+    """Seedream 5.5 for the scene where this provider has it allowed, else Seedream 5 Pro.
+    NanoGPT's 5.5 isn't marked NSFW, so its Best Option stays on 5 Pro."""
+    try:
+        return image_route("seedream-5.5", (provider,))
+    except ValueError:
+        return image_route("seedream-5-pro", (provider,))
+
+
 async def run_best(job: Any, plan: Plan, people: Sequence[Any], option: Any) -> None:
-    scene = image_route("seedream-5-pro", (option.provider,))
+    scene = best_scene_route(option.provider)
     finish_model = image_route("seedream-4.5", (option.provider,))
     aspect = choose_aspect(job, finish_model, plan)
 

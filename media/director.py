@@ -21,7 +21,7 @@ from .references import DEFAULT_ORDER, Person
 GUIDES = Path(__file__).parent / "guides"
 GUIDE_FOR = {
     "flux-lora": "flux-dev", "zimage": "zimage", "qwen-edit": "qwen-edit", "seedream-4.5": "seedream-4.5",
-    "seedream-5-pro": "seedream-5", "best": "seedream-5", "wan-3.0": "wan-3.0", "wan-2.2": "wan-3.0",
+    "seedream-5-pro": "seedream-5", "seedream-5.5": "seedream-5", "best": "seedream-5", "wan-3.0": "wan-3.0", "wan-2.2": "wan-3.0",
     "seedance-2": "seedance-2","seedance-2.5": "seedance-2.5",
     "minimax-h3": "minimax-h3", "ltx-2.3": "ltx", "ltx-2.5": "ltx",
 }

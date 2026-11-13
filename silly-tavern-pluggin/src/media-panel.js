@@ -2,7 +2,7 @@
 // popup also switches between the card and its side characters, each with their own.
 
 import { bridge, bridgeBase, cachedCapabilities } from './bridge.js';
-import { uploadAsset, windowProblem } from './assets.js';
+import { libraryImage, libraryPage, removeFromLibrary, uploadAsset, windowProblem } from './assets.js';
 import { runDetached } from './jobs.js';
 import { SLOTS } from './profile.js';
 import { blobToBase64, saveFile } from './store.js';
@@ -52,6 +52,21 @@ function galleryItem(g) {
         </div>`;
 }
 
+const LIBRARY_PAGE = 48;
+const slotLabel = (id) => SLOTS.find(s => s.id === id)?.label || id;
+const dayText = (seconds) => new Date(seconds * 1000).toLocaleDateString();
+
+function libraryItem(a, inUse) {
+    const about = [a.label, `${a.width}×${a.height}`, `uploaded ${dayText(a.created_at)}`].filter(Boolean).join('\n');
+    return `
+        <div class="fm-lib-item ${inUse ? 'fm-lib-used' : ''}" data-id="${esc(a.id)}" title="${esc(about)}">
+            <img src="${esc(a.thumb)}" alt="" loading="lazy">
+            <div class="fm-lib-label">${esc(a.label || dayText(a.created_at))}</div>
+            ${inUse ? '<div class="fm-lib-badge">In use here</div>' : ''}
+            <div class="menu_button fa-solid fa-xmark fm-lib-remove" title="Remove from the library. Slots already using it keep it."></div>
+        </div>`;
+}
+
 function traceText(trace) {
     return trace.steps.map((s) => {
         const mark = s.ok === false ? '✗' : s.ok ? '✓' : '·';
@@ -79,6 +94,8 @@ export async function openMediaPanel(card) {
     let page = 0;
     let filter = '';
     let uploadSlot = '';
+    let librarySlot = '';
+    let libraryOffset = 0;
     let castPeople = [];
     const $root = $(`
         <div class="fm-popup">
@@ -101,6 +118,15 @@ export async function openMediaPanel(card) {
                 <div class="fm-lora-status"></div>
                 <div class="fm-migrated fm-hidden"></div>
                 <div class="fm-avatars"></div>
+                <div class="fm-library fm-hidden">
+                    <div class="fm-library-head">
+                        <b class="fm-library-title"></b>
+                        <div class="menu_button fa-solid fa-xmark fm-library-close" title="Close"></div>
+                    </div>
+                    <small class="fm-hint">Every reference uploaded for any character or persona. Pick one to use it in this slot. Nothing is uploaded again.</small>
+                    <div class="fm-lib-grid"></div>
+                    <div class="menu_button fm-lib-more fm-hidden">Load more</div>
+                </div>
                 <label class="checkbox_label"><input type="checkbox" class="fm-confirm"> Fictional adult, or my own photos on my own persona</label>
                 <small class="fm-hint">${esc(limitsText())} Location data is removed. Nothing is sent to a provider until this box is ticked.</small>
             </div>
@@ -144,6 +170,7 @@ export async function openMediaPanel(card) {
                     ${ref?.rejected ? `<div class="fm-slot-error">${esc(ref.rejected)} Replace this image.</div>` : ''}
                     <div class="fm-slot-actions">
                         <div class="menu_button fa-solid fa-upload fm-upload" title="Upload an image"></div>
+                        <div class="menu_button fa-solid fa-images fm-library-open" title="Choose from images uploaded before, for anyone"></div>
                         <div class="menu_button fa-solid fa-wand-magic-sparkles fm-generate" title="Generate from the active image model"></div>
                         <div class="menu_button fa-solid fa-trash fm-clear ${ref ? '' : 'fm-hidden'}" title="Clear slot"></div>
                     </div>
@@ -157,10 +184,50 @@ export async function openMediaPanel(card) {
     };
 
     const saveFromBlob = async (slot, blob, target = who) => {
-        const asset = await uploadAsset(blob, 'reference');
+        const asset = await uploadAsset(blob, 'reference', `${target.name}, ${slotLabel(slot)}`);
         const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
         const url = await saveFile(await blobToBase64(blob), ext, target.folder, `ref_${slot}_${Date.now()}`);
         await setSlot(slot, { url, asset }, target);
+    };
+
+    /** A library image into a slot: a copy goes into this person's folder, the bridge keeps its one asset. */
+    const saveFromLibrary = async (slot, id, target = who) => {
+        const blob = await libraryImage(id);
+        const url = await saveFile(await blobToBase64(blob), 'jpg', target.folder, `ref_${slot}_${Date.now()}`);
+        await setSlot(slot, { url, asset: id }, target);
+    };
+
+    const closeLibrary = () => {
+        librarySlot = '';
+        $root.find('.fm-library').addClass('fm-hidden');
+    };
+
+    const renderLibrary = async (append = false) => {
+        const $grid = $root.find('.fm-lib-grid');
+        if (!append) {
+            libraryOffset = 0;
+            $grid.html('<i>Loading…</i>');
+        }
+        const asked = librarySlot;
+        try {
+            const { assets: items, more } = await libraryPage(libraryOffset, LIBRARY_PAGE);
+            if (asked !== librarySlot) return;
+            libraryOffset += LIBRARY_PAGE;      // by rows on the bridge, so a skipped missing file doesn't repeat one
+            if (!append) $grid.empty();
+            if (!items.length && !append) $grid.html('<i>Nothing uploaded yet. Every image you put in a slot, for anyone, lands here.</i>');
+            const inUse = new Set(Object.values(profile.refs || {}).map(r => r?.asset).filter(Boolean));
+            $grid.append(items.map(a => libraryItem(a, inUse.has(a.id))).join(''));
+            $root.find('.fm-lib-more').toggleClass('fm-hidden', !more);
+        } catch (err) {
+            $grid.html(`<i>${esc(err?.detail || err?.message || err)}</i>`);
+        }
+    };
+
+    const openLibrary = (slot) => {
+        librarySlot = slot;
+        $root.find('.fm-library-title').text(`Choose an image for ${who.name}: ${slotLabel(slot)}`);
+        $root.find('.fm-library').removeClass('fm-hidden');
+        renderLibrary();
     };
 
     const renderGallery = async (append = false) => {
@@ -247,6 +314,7 @@ export async function openMediaPanel(card) {
         $root.find('.fm-appearance').val(profile.appearance?.text || '');
         $root.find('.fm-auto').prop('checked', profile.auto !== false);
         $root.find('.fm-auto-row').toggleClass('fm-hidden', side || (!who.sdPrompt && who.key.startsWith('persona:')));
+        closeLibrary();                    // it was opened for the person shown before
         renderSlots();
         loraStatus();
         if (!$root.find('[data-pane="gallery"]').hasClass('fm-hidden')) renderGallery();
@@ -341,6 +409,40 @@ export async function openMediaPanel(card) {
             toastr.error(err?.detail || err?.message || String(err), 'Media Studio: image failed');
         } finally {
             $slot.removeClass('fm-busy');
+        }
+    });
+    $root.on('click', '.fm-library-open', function () {
+        const slot = $(this).closest('.fm-slot').data('slot');
+        if (slot === librarySlot) return closeLibrary();
+        openLibrary(slot);
+    });
+    $root.on('click', '.fm-library-close', closeLibrary);
+    $root.on('click', '.fm-lib-more', () => renderLibrary(true));
+    $root.on('click', '.fm-lib-item', async function (e) {
+        if ($(e.target).closest('.fm-lib-remove').length) return;
+        const id = $(this).attr('data-id');
+        const slot = librarySlot;
+        const target = who;
+        if (!slot) return;
+        closeLibrary();
+        const $slot = $root.find(`.fm-slot[data-slot="${slot}"]`).addClass('fm-busy');
+        try {
+            await saveFromLibrary(slot, id, target);
+        } catch (err) {
+            toastr.warning(err?.detail || err?.message || String(err), 'Media Studio');
+        } finally {
+            $slot.removeClass('fm-busy');
+        }
+    });
+    $root.on('click', '.fm-lib-remove', async function (e) {
+        e.stopPropagation();
+        const $item = $(this).closest('.fm-lib-item');
+        try {
+            await removeFromLibrary($item.attr('data-id'));
+            $item.remove();
+            libraryOffset -= 1;                // the next page starts one row earlier now
+        } catch (err) {
+            toastr.warning(err?.detail || err?.message || String(err), 'Media Studio');
         }
     });
     $root.on('click', '.fm-clear', async function () { await setSlot($(this).closest('.fm-slot').data('slot'), null); });

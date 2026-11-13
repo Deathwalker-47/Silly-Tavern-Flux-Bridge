@@ -6,13 +6,14 @@ phone photo reaches no provider with its location attached.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import time
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageOps
 
@@ -34,6 +35,8 @@ MIN_SHAPE = 2 / 5                # shortest side divided by longest side
 FORMATS = {"JPEG": "JPEG", "PNG": "PNG", "WEBP": "WebP", "HEIF": "HEIC"}
 STORED_EDGE = 2048
 STORED_QUALITY = 90
+THUMB_EDGE, THUMB_QUALITY = 256, 78
+LABEL_CHARS = 80
 
 WINDOW = {
     "min_bytes": MIN_BYTES, "max_bytes": MAX_BYTES, "min_side": MIN_SIDE, "max_side": MAX_SIDE,
@@ -118,25 +121,71 @@ def _write(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
-def store(data: bytes, purpose: str = "reference") -> Tuple["Asset", bool]:
+def store(data: bytes, purpose: str = "reference", label: str = "") -> Tuple["Asset", bool]:
     """Saves an image once. Returns the asset and whether it already existed.
 
-    References must fit the window. Frames (keyframes, message images) skip it, because
-    fit_refs handles them before any provider sees them.
+    References must fit the window, and land in the library under their label. Frames
+    (keyframes, message images) skip both, because fit_refs handles them before any
+    provider sees them.
     """
     if purpose == "reference":
         check_window(data)
+    label = " ".join(str(label or "").split())[:LABEL_CHARS] if purpose == "reference" else ""
     key = asset_id(data)
     row = db.asset(key)
     if row and Path(row["path"]).exists():
-        if purpose == "reference" and row["purpose"] != "reference":
-            db.promote_asset(key)
+        if purpose == "reference":
+            db.reuse_asset(key, label)
         return Asset(key, Path(row["path"]), row["mime"], row["bytes"]), True
     cleaned = clean_jpeg(data)
     path = asset_dir() / f"{key}.jpg"
     _write(path, cleaned)
-    db.put_asset(key, str(path), "image/jpeg", len(cleaned), purpose)
+    db.put_asset(key, str(path), "image/jpeg", len(cleaned), purpose, label)
     return Asset(key, path, "image/jpeg", len(cleaned)), False
+
+
+def _thumb_path(key: str) -> Path:
+    return asset_dir() / "thumbs" / f"{key}.jpg"
+
+
+def thumbnail(path: Path, key: str) -> bytes:
+    """A small JPEG for the library grid, made once and kept next to the image."""
+    thumb = _thumb_path(key)
+    if thumb.exists():
+        return thumb.read_bytes()
+    data = clean_jpeg(path.read_bytes(), THUMB_EDGE, THUMB_QUALITY)
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    _write(thumb, data)
+    return data
+
+
+def library(limit: int = 48, offset: int = 0) -> Dict[str, Any]:
+    """One page of the shared image library: every reference uploaded for anyone, newest first,
+    each with a thumbnail inline so the grid needs one request and no open file route."""
+    rows = db.library(limit + 1, offset)
+    items = []
+    for row in rows[:limit]:
+        path = Path(row["path"])
+        if not path.exists():
+            continue
+        try:
+            with Image.open(path) as image:
+                width, height = image.size
+            thumb = thumbnail(path, row["id"])
+        except Exception:
+            continue
+        items.append({"id": row["id"], "label": row.get("label") or "", "created_at": row["created_at"],
+                      "width": width, "height": height,
+                      "thumb": "data:image/jpeg;base64," + base64.b64encode(thumb).decode("ascii")})
+    return {"assets": items, "more": len(rows) > limit}
+
+
+def hide(key: str) -> bool:
+    """Takes an image out of the library. The file stays, so any slot still using it keeps working."""
+    if not db.asset(key):
+        return False
+    db.hide_asset(key)
+    return True
 
 
 SHAPES = ("9:16", "3:4", "1:1", "4:3", "16:9")
@@ -196,6 +245,7 @@ def sweep_frames(before: Optional[int] = None) -> int:
     count = 0
     for row in db.stale_frames(cutoff):
         Path(row["path"]).unlink(missing_ok=True)
+        _thumb_path(row["id"]).unlink(missing_ok=True)
         db.delete_asset(row["id"])
         count += 1
     return count

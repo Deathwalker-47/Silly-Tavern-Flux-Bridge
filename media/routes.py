@@ -135,8 +135,9 @@ async def clear_key(provider: str, request: Request):
 
 
 @router.post("/assets")
-async def upload_asset(request: Request, purpose: str = "reference"):
-    """A raw image body. Hashes it, checks the window, strips metadata, stores it once."""
+async def upload_asset(request: Request, purpose: str = "reference", label: str = ""):
+    """A raw image body. Hashes it, checks the window, strips metadata, stores it once.
+    A reference also joins the shared library, under its label (who and which slot)."""
     _check_token(request)
     if purpose not in ("reference", "frame"):
         raise HTTPException(status_code=400, detail="purpose must be reference or frame")
@@ -146,17 +147,45 @@ async def upload_asset(request: Request, purpose: str = "reference"):
     data = await request.body()
     try:
         with telemetry.step("assets", "store", purpose=purpose, bytes=len(data)) as facts:
-            asset, existed = await asyncio.to_thread(assets.store, data, purpose)
+            asset, existed = await asyncio.to_thread(assets.store, data, purpose, label)
             facts.update(existed=existed, stored_bytes=asset.bytes)
     except assets.AssetRejected as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"asset_id": asset.id, "existed": existed, "bytes": asset.bytes}
 
 
+@router.get("/assets")
+async def asset_library(request: Request = None, limit: int = 48, offset: int = 0):
+    """The shared image library: every reference uploaded for any character or persona, to pick again."""
+    _check_token(request)
+    return await asyncio.to_thread(assets.library, max(1, min(int(limit), 96)), max(0, int(offset)))
+
+
 @router.get("/assets/{asset_id}/exists")
 async def asset_exists(asset_id: str, request: Request = None):
     _check_token(request)
     return {"exists": assets.exists(asset_id)}
+
+
+@router.get("/assets/{asset_id}/file")
+async def asset_file(asset_id: str, request: Request = None):
+    """The stored image itself, for a slot that picks it from the library. Token only: asset
+    ids are hashes of the file, not random like generation file ids."""
+    _check_token(request)
+    from fastapi.responses import FileResponse  # imported lazily; not part of the test stubs
+    row = db.asset(asset_id)
+    if not row or not Path(row["path"]).exists():
+        raise HTTPException(status_code=404, detail="That image is no longer on the bridge.")
+    return FileResponse(row["path"], media_type=row.get("mime") or "image/jpeg")
+
+
+@router.delete("/assets/{asset_id}")
+async def remove_from_library(asset_id: str, request: Request = None):
+    """Out of the library only. Slots that already use the image keep it."""
+    _check_token(request)
+    if not assets.hide(asset_id):
+        raise HTTPException(status_code=404, detail="That image is no longer on the bridge.")
+    return {"ok": True}
 
 
 @router.post("/media/lora-status")
